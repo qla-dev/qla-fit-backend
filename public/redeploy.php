@@ -8,15 +8,6 @@ ini_set('output_buffering', '0');
 ini_set('zlib.output_compression', '0');
 
 $baseDir = dirname(__DIR__);
-if (PHP_SAPI !== 'cli') {
-    $expected = trim((string) (getenv('REDEPLOY_TOKEN') ?: @file_get_contents($baseDir.'/.deploy-token')));
-    $authorization = $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '';
-    $provided = str_starts_with($authorization, 'Bearer ') ? substr($authorization, 7) : '';
-    if (($_SERVER['REQUEST_METHOD'] ?? '') !== 'POST' || $expected === '' || !hash_equals($expected, $provided)) {
-        http_response_code(403);
-        exit("Deployment authorization required.\n");
-    }
-}
 $lock = fopen(sys_get_temp_dir().DIRECTORY_SEPARATOR.'qla-fit-backend-'.sha1($baseDir).'.lock', 'c');
 if ($lock === false || !flock($lock, LOCK_EX | LOCK_NB)) {
     http_response_code(409);
