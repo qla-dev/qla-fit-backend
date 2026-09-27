@@ -33,6 +33,27 @@ class FitnessApiTest extends TestCase
         $this->getJson('/api/sync')->assertUnauthorized();
     }
 
+    public function test_conversation_history_is_grouped_and_account_scoped(): void
+    {
+        $user = $this->member();
+        $other = User::factory()->create();
+        $conversation = (string) Str::uuid();
+        foreach ([$user->id, $user->id, $other->id] as $index => $userId) {
+            DB::table('markai_messages')->insert([
+                'id' => (string) Str::uuid(), 'user_id' => $userId,
+                'conversation_id' => $conversation, 'mode' => 'training',
+                'prompt' => $index === 0 ? 'First question' : 'Later question',
+                'status' => 'complete', 'reply' => json_encode(['text' => 'Answer']),
+                'created_at' => now()->addSeconds($index), 'updated_at' => now(),
+            ]);
+        }
+        $this->getJson('/api/markai/messages')->assertOk()->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.title', 'First question')
+            ->assertJsonPath('data.0.message_count', 2);
+        $this->getJson('/api/markai/messages?conversation_id='.$conversation)
+            ->assertOk()->assertJsonCount(2, 'data');
+    }
+
     public function test_sync_is_idempotent_isolated_and_preserves_deletions(): void
     {
         $user = $this->member();

@@ -11,7 +11,20 @@ class MarkaiController extends Controller
 {
     public function index(Request $request)
     {
-        $data = $request->validate(['conversation_id' => 'required|uuid']);
+        $data = $request->validate(['conversation_id' => 'sometimes|uuid']);
+        if (! isset($data['conversation_id'])) {
+            $threads = DB::table('markai_messages as messages')
+                ->where('messages.user_id', $request->user()->id)->where('messages.status', 'complete')
+                ->select('messages.conversation_id', 'messages.mode')
+                ->selectRaw('MAX(messages.created_at) as updated_at, COUNT(*) as message_count')
+                ->selectSub(DB::table('markai_messages as first_message')->select('prompt')
+                    ->whereColumn('first_message.conversation_id', 'messages.conversation_id')
+                    ->where('first_message.user_id', $request->user()->id)->where('first_message.status', 'complete')
+                    ->orderBy('created_at')->orderBy('id')->limit(1), 'title')
+                ->groupBy('messages.conversation_id', 'messages.mode')->orderByDesc('updated_at')->limit(100)->get();
+
+            return response()->json(['data' => $threads]);
+        }
         $messages = DB::table('markai_messages')->where('user_id', $request->user()->id)
             ->where('conversation_id', $data['conversation_id'])->where('status', 'complete')
             ->orderByDesc('created_at')->limit(100)->get()->reverse()->values()->map(fn ($row) => [
