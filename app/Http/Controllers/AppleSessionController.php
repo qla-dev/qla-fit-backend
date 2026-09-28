@@ -35,6 +35,15 @@ class AppleSessionController extends Controller
             'email' => hash('sha256', $claims->sub).'@apple.local',
             'password' => Str::random(64), 'ai_coins' => config('fitness.registration_coins'),
         ]));
+        // Shown on the Account screen only. Refreshed on every sign-in, since
+        // Apple sends it in each token and a user can change it.
+        $verified = in_array($claims->email_verified ?? false, [true, 'true'], true);
+        if (is_string($claims->email ?? null) && $verified) {
+            $user->forceFill([
+                'apple_email' => $claims->email,
+                'apple_email_private' => in_array($claims->is_private_email ?? false, [true, 'true'], true),
+            ])->save();
+        }
 
         return response()->json(['data' => [
             'token' => $user->createToken('native', ['*'], now()->addDays(90))->plainTextToken,

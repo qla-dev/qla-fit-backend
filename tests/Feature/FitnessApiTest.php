@@ -138,4 +138,24 @@ class FitnessApiTest extends TestCase
         $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid(), 'image' => 'data:text/html;base64,PGI+'])->assertStatus(422);
         $this->postJson('/api/markai/messages', ['id' => (string) Str::uuid(), 'conversation_id' => $conversation, 'mode' => 'free'])->assertStatus(422);
     }
+
+    public function test_apple_sign_in_shows_the_verified_email_without_using_it_as_identity(): void
+    {
+        $claims = [
+            (object) ['sub' => 'apple-user', 'email' => 'x7@privaterelay.appleid.com', 'email_verified' => 'true', 'is_private_email' => 'true'],
+            (object) ['sub' => 'apple-user', 'email' => 'nedim@example.com', 'email_verified' => true],
+            (object) ['sub' => 'other-user', 'email' => 'nedim@example.com', 'email_verified' => false],
+        ];
+        $this->mock(AppleIdentity::class, fn ($mock) => $mock->shouldReceive('verify')->times(3)->andReturn(...$claims));
+        $signIn = fn () => $this->postJson('/api/auth/apple', ['identity_token' => 't',
+            'challenge_id' => $this->postJson('/api/auth/apple/challenge')->json('data.id')]);
+        $signIn()->assertOk()->assertJsonPath('data.user.sign_in.email', 'x7@privaterelay.appleid.com')
+            ->assertJsonPath('data.user.sign_in.private_email', true)->assertJsonPath('data.user.sign_in.provider', 'apple');
+        // Refreshed on the next sign-in; the same Apple subject stays one account.
+        $signIn()->assertOk()->assertJsonPath('data.user.sign_in.email', 'nedim@example.com')
+            ->assertJsonPath('data.user.sign_in.private_email', false);
+        // An unverified email is never stored, and never merges accounts.
+        $signIn()->assertOk()->assertJsonPath('data.user.sign_in.email', null)->assertJsonPath('data.registered', true);
+        $this->assertDatabaseCount('users', 2);
+    }
 }

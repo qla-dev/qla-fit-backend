@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AppleSessionController;
 use App\Http\Controllers\MarkaiController;
+use App\Http\Controllers\MealPlanController;
 use App\Http\Controllers\RecordController;
 use App\Http\Controllers\SyncController;
 use Illuminate\Support\Facades\Route;
@@ -14,4 +15,5 @@ Route::middleware(['auth:sanctum', 'throttle:120,1'])->group(function () {
     Route::apiResource('sync', SyncController::class)->only(['index', 'store']);
     Route::apiResource('records/{collection}/items', RecordController::class)->parameters(['items' => 'record']);
     Route::apiResource('markai/messages', MarkaiController::class)->only(['index', 'store']);
+    Route::post('markai/meal-plans', [MealPlanController::class, 'store'])->middleware('throttle:10,1');
 });
