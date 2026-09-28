@@ -120,4 +120,22 @@ class FitnessApiTest extends TestCase
         $this->member(0);
         $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid()])->assertStatus(402);
     }
+
+    public function test_ai_photo_messages_reach_the_model_but_are_not_stored(): void
+    {
+        $this->member();
+        $image = 'data:image/jpeg;base64,'.base64_encode('jpeg-bytes');
+        $this->mock(Markai::class, fn ($mock) => $mock->shouldReceive('reply')->once()
+            ->withArgs(fn ($mode, $messages) => end($messages)['content'][1] === ['type' => 'image_url', 'image_url' => ['url' => $image]]
+                && end($messages)['content'][0]['text'] === 'What is in this photo?')
+            ->andReturn(['text' => 'A plate of pasta.', 'food' => null]));
+        $conversation = (string) Str::uuid();
+        $body = ['id' => (string) Str::uuid(), 'conversation_id' => $conversation, 'mode' => 'free', 'image' => $image];
+        $this->postJson('/api/markai/messages', $body)->assertOk()->assertJsonPath('data.ai_coins', 99);
+        $this->assertDatabaseHas('markai_messages', ['id' => $body['id'], 'prompt' => '', 'has_image' => true]);
+        $this->assertStringNotContainsString('jpeg', json_encode(DB::table('markai_messages')->get()));
+        $this->getJson('/api/markai/messages?conversation_id='.$conversation)->assertOk()->assertJsonPath('data.0.has_image', true);
+        $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid(), 'image' => 'data:text/html;base64,PGI+'])->assertStatus(422);
+        $this->postJson('/api/markai/messages', ['id' => (string) Str::uuid(), 'conversation_id' => $conversation, 'mode' => 'free'])->assertStatus(422);
+    }
 }

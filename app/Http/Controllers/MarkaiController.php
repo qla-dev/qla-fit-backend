@@ -28,7 +28,8 @@ class MarkaiController extends Controller
         $messages = DB::table('markai_messages')->where('user_id', $request->user()->id)
             ->where('conversation_id', $data['conversation_id'])->where('status', 'complete')
             ->orderByDesc('created_at')->limit(100)->get()->reverse()->values()->map(fn ($row) => [
-                'id' => $row->id, 'prompt' => $row->prompt, 'reply' => json_decode($row->reply, true),
+                'id' => $row->id, 'prompt' => $row->prompt, 'has_image' => (bool) $row->has_image,
+                'reply' => json_decode($row->reply, true),
             ]);
 
         return response()->json(['data' => $messages]);
@@ -37,11 +38,19 @@ class MarkaiController extends Controller
     public function store(Request $request, Markai $ai)
     {
         $data = $request->validate(['id' => 'required|uuid', 'conversation_id' => 'required|uuid',
-            'mode' => ['required', Rule::in(['macros', 'training', 'free'])], 'prompt' => 'required|string|max:6000']);
+            'mode' => ['required', Rule::in(['macros', 'training', 'free'])],
+            'prompt' => 'nullable|required_without:image|string|max:6000',
+            // A downscaled JPEG from the app, forwarded to the model and never stored.
+            'image' => ['nullable', 'string', 'max:4000000', 'regex:#^data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$#']]);
+        $image = $data['image'] ?? null;
+        unset($data['image']);
+        $data['prompt'] ??= '';
+        $data['has_image'] = $image !== null;
         $user = $request->user();
         $previous = DB::table('markai_messages')->where('id', $data['id'])->first();
         if ($previous) {
             abort_unless($previous->user_id === $user->id && $previous->prompt === $data['prompt']
+                && (bool) $previous->has_image === $data['has_image']
                 && $previous->conversation_id === $data['conversation_id'] && $previous->mode === $data['mode'], 409);
             abort_unless($previous->status === 'complete', 409, 'This message is pending or failed. Start a new request.');
 
@@ -53,7 +62,7 @@ class MarkaiController extends Controller
         $last = $history->last();
         $lastReply = $last ? json_decode($last->reply, true) : null;
         // Confirmation is determined by application code, never an AI-provided action.
-        $confirmation = preg_match('/^(?:ok(?:ay)?[,!. ]*)?(?:let[’\x27]?s log(?: it)?|log(?: it| this| that)?|save(?: it| this)?)[.! ]*$/iu', trim($data['prompt'])) === 1;
+        $confirmation = ! $image && preg_match('/^(?:ok(?:ay)?[,!. ]*)?(?:let[’\x27]?s log(?: it)?|log(?: it| this| that)?|save(?: it| this)?)[.! ]*$/iu', trim($data['prompt'])) === 1;
         $food = $confirmation ? ($lastReply['food'] ?? null) : null;
         $cost = $food ? 0 : 1;
         DB::transaction(function () use ($user, $data, $cost) {
@@ -69,10 +78,13 @@ class MarkaiController extends Controller
             } else {
                 $messages = [];
                 foreach ($history as $row) {
-                    $messages[] = ['role' => 'user', 'content' => $row->prompt];
+                    $messages[] = ['role' => 'user', 'content' => $row->has_image ? trim('[The user sent a photo.] '.$row->prompt) : $row->prompt];
                     $messages[] = ['role' => 'assistant', 'content' => $row->reply];
                 }
-                $messages[] = ['role' => 'user', 'content' => $data['prompt']];
+                $messages[] = ['role' => 'user', 'content' => $image
+                    ? [['type' => 'text', 'text' => $data['prompt'] !== '' ? $data['prompt'] : 'What is in this photo?'],
+                        ['type' => 'image_url', 'image_url' => ['url' => $image]]]
+                    : $data['prompt']];
                 $reply = [...$ai->reply($data['mode'], $messages), 'food_id' => $data['id'], 'log_requested' => false];
             }
             DB::table('markai_messages')->where('id', $data['id'])->update(['status' => 'complete', 'reply' => json_encode($reply), 'updated_at' => now()]);
