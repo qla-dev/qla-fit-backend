@@ -7,9 +7,9 @@ use Illuminate\Support\Facades\Validator;
 
 /**
  * Seven-day meal plans from MarkAI, built from the user's food and kitchen
- * preferences. In Croatia the plan is priced from today's real shelf prices
- * (api.cijene.dev); elsewhere the model estimates in the chosen currency and
- * the plan says so.
+ * preferences. In Croatia the plan is priced from real shelf prices (the
+ * latest cijene.dev daily archive); elsewhere the model estimates in the
+ * chosen currency and the plan says so.
  */
 class MealPlanner
 {
@@ -22,10 +22,16 @@ class MealPlanner
     public function plan(array $preferences, string $region, string $currency, string $language): array
     {
         abort_unless(config('fitness.markai.key'), 503, 'MarkAI is not configured yet.');
-        $staples = $region === 'HR' && $this->prices->configured() ? $this->prices->staples() : [];
+        $staples = $region === 'HR' ? $this->prices->staples() : [];
         $priced = $staples !== [];
+        $priceDate = $priced ? $this->prices->priceDate() : null;
+        // A newer archive is processed after this response is sent, so the
+        // user never waits on a 70 MB download; the next plan uses it.
+        if ($region === 'HR' && $this->prices->stale()) {
+            app()->terminating(fn () => $this->prices->refresh());
+        }
         $priceTable = $priced
-            ? "Today's Croatian shelf prices in EUR (cheapest chain average; unit as sold):\n"
+            ? "Croatian shelf prices in EUR from {$priceDate} (a cheap typical price across chains, per unit):\n"
                 .collect($staples)->map(fn ($p, $name) => "- {$name}: {$p['price']} EUR per {$p['unit']}")->implode("\n")
                 ."\nPrefer these ingredients and price every ingredient from this table, scaled to the quantity used. "
                 .'An ingredient not in the table may be used sparingly; estimate its price.'
@@ -86,6 +92,6 @@ class MealPlanner
 
         return [...$plan, 'region' => $region, 'currency' => $priced ? 'EUR' : $currency,
             'weekly_cost' => round($weekly, 2), 'prices' => $priced ? 'cijene' : 'estimate',
-            'price_date' => $priced ? now()->toDateString() : null];
+            'price_date' => $priceDate];
     }
 }
