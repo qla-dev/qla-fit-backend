@@ -28,6 +28,9 @@ class Markai
                 'model' => config('fitness.markai.model'),
                 'messages' => [['role' => 'system', 'content' => $system], ...$history],
                 'response_format' => ['type' => 'json_object'], 'max_tokens' => 1200,
+                // A little thinking for reading portions off a photo; left at
+                // the default it was slow and spent the reply's token budget.
+                'reasoning' => ['effort' => 'low'],
             ])->throw();
         $reply = json_decode($response->json('choices.0.message.content', ''), true, 32, JSON_THROW_ON_ERROR);
 

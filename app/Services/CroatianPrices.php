@@ -2,34 +2,35 @@
 
 namespace App\Services;
 
+use Illuminate\Http\Client\Pool;
+use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Str;
 use Throwable;
-use ZipArchive;
 
 /**
- * Croatian grocery prices from cijene.dev's public daily archives.
+ * Croatian grocery prices from the cijene.dev API.
  *
- * No key or configuration: /v0/list names one ZIP per day with every chain's
- * products and per-store prices (the chains must publish them by law). One
- * archive is roughly 70 MB, so it is processed once, off the request path,
- * into a small basket of staple prices that meal plans read.
+ * Chains must publish their shelf prices by law; cijene.dev collects them and
+ * answers a product search with each chain's average price for the day. Once
+ * a day the staples below are searched in parallel (a second or two) and kept
+ * as a small basket that meal plans are priced from. Without CIJENE_API_KEY
+ * there is no basket and plans are estimated.
  */
 class CroatianPrices
 {
-    public const LIST_URL = 'https://api.cijene.dev/v0/list';
+    public const SEARCH_URL = 'https://api.cijene.dev/v1/products/';
 
-    /** The processed basket: ['date' => Y-m-d, 'prices' => [english => price info]]. */
+    /** The basket: ['date' => Y-m-d, 'fetched' => Y-m-d, 'prices' => [english => price info]]. */
     private const BASKET_KEY = 'cijene:basket';
 
     /**
      * The basket meal plans are priced from: [english => [prefix, exclusions]].
      * Chains name products type-first ("MLIJEKO UHT 2,8% 1L", "KRUMPIR
-     * MLADI"), so a product counts only when its name starts with the prefix
-     * as a whole word (diacritics folded); a trailing * makes it a stem, for
-     * "jabuka"/"jabuke". The English name is what plans and lists show.
+     * MLADI"), so a chain's product counts only when its name starts with the
+     * prefix as a whole word (diacritics folded); a trailing * makes it a
+     * stem, for "jabuka"/"jabuke". The English name is what plans show.
      */
     public const STAPLES = [
         'chicken breast' => ['pileca prsa', ['narezak', 'pan', 'pecen', 'dimlj']],
@@ -48,18 +49,18 @@ class CroatianPrices
         'bread' => ['kruh', ['mrvice', 'prepec', 'tost', 'dvopek']],
         'flour' => ['brasno', ['krmno', 'kukuruzn']],
         'potatoes' => ['krumpir', ['cips', 'pire', 'krokete', 'pom', 'smrz']],
-        'onions' => ['luk', ['cesnjak', 'prah', 'pasta', 'suseni', 'prziv']],
+        'onions' => ['luk', ['cesnjak', 'prah', 'pasta', 'suseni', 'prziv', 'kockic', 'smrz', 'ledo']],
         'garlic' => ['cesnjak', ['kaps', 'prah', 'granul']],
-        'tomatoes' => ['rajcica', ['pasir', 'koncentr', 'susen', 'umak', 'sok', 'kecap', 'pelat', 'konzerv']],
-        'peppers' => ['paprika', ['mljeven', 'slatka mlj', 'ljuta mlj', 'pasta', 'ajvar', 'cips', 'prah']],
-        'cucumber' => ['krastav*', ['kiseli', 'salata']],
-        'carrots' => ['mrkva', ['sok', 'salata']],
-        'cabbage' => ['kupus', ['kiseli', 'salata', 'list']],
+        'tomatoes' => ['rajcica', ['pasir', 'koncentr', 'susen', 'umak', 'sok', 'kecap', 'pelat', 'konzerv', 'sjeck', 'pire']],
+        'peppers' => ['paprika', ['mljeven', 'slatka mlj', 'ljuta mlj', 'pasta', 'ajvar', 'cips', 'prah', 'pecen', 'ocij', 'kisel', 'punjen']],
+        'cucumber' => ['krastav*', ['kiseli', 'salata', 'ocij', 'oc.', 'kornison']],
+        'carrots' => ['mrkva', ['sok', 'salata', 'smrz', 'kock']],
+        'cabbage' => ['kupus', ['kis', 'salata', 'list']],
         'lettuce' => ['salata', ['od ', 'tun', 'krumpir', 'mix', 'kupus', 'rikul', 'grah']],
         'spinach' => ['spinat', ['krem', 'smrz']],
         'apples' => ['jabuk*', ['sok', 'cips', 'susen', 'kasa', 'ocat', 'pita']],
         'bananas' => ['banan*', ['cips', 'susen']],
-        'lemons' => ['limun', ['sok', 'trava', 'kora', 'ulje']],
+        'lemons' => ['limun', ['sok', 'trava', 'kora', 'ulje', 'secer', 'caj', 'aroma']],
         'beans' => ['grah', ['mahun', 'salata', 'varivo']],
         'lentils' => ['leca', []],
         'chickpeas' => ['slanutak', ['humus', 'namaz']],
@@ -70,89 +71,99 @@ class CroatianPrices
         'frozen vegetables' => ['smrznuto povrce', []],
         'walnuts' => ['orasi', ['cokolad', 'u medu', 'med ']],
         'honey' => ['med ', ['maramic', 'bombon', 'sapun', 'krem']],
-        'sugar' => ['secer', ['ugostit', 'vanil', 'u prahu', 'bez', 'kocke']],
+        'sugar' => ['secer', ['ugostit', 'vanil', 'u prahu', 'bez', 'kocke', 'mljev', 'smed']],
         'coffee' => ['kava', ['kaps', 'jastuc', 'instant', '3u1', '2u1', 'napit', 'hlad']],
     ];
+
+    /**
+     * What to search for a stem: the API matches whole words, so "jabuk"
+     * finds nothing while "jabuke" finds every apple.
+     */
+    private const QUERIES = ['krastav*' => 'krastavci', 'jabuk*' => 'jabuke', 'banan*' => 'banane', 'srdel*' => 'srdele'];
+
+    /**
+     * Fresh produce, with the search that reaches it: [english => query].
+     * A plain "limun" or "rajcica" search is all syrups and tins, so these
+     * are searched the way loose produce is listed, and only listings sold
+     * loose (per kg or per piece, no pack weight in the name) count.
+     */
+    private const FRESH = [
+        'lemons' => 'limun kg', 'tomatoes' => 'rajcica kg', 'onions' => 'luk zuti', 'cucumber' => 'krastavac',
+        'carrots' => 'mrkva kg', 'cabbage' => 'kupus kg', 'apples' => 'jabuke', 'bananas' => 'banane',
+        'lettuce' => 'salata kristal', 'garlic' => 'cesnjak', 'peppers' => 'paprika babura',
+    ];
+
+    /** A pack weight or volume in a name: "800g", "1,5 L". */
+    private const PACK_SIZE = '/\d\s*(kg|dkg|gr|g|l|dl|cl|ml)\b/u';
 
     /** Categories that are never food ("Mlijeko za tijelo" is body lotion). */
     private const EXCLUDED_CATEGORIES = ['kozmet', 'kucanst', 'drogerij', 'higijen', 'ljubim', 'njega'];
 
     /** Only real shelf products: never priced as food, whatever the name. */
     private const EXCLUDE = ['sprej', 'maramic', 'naljepnic', 'sampon', 'sapun', 'deterd',
-        'hrana za', 'za pse', 'za macke', 'kozmet', 'aroma', 'svijec', 'miris'];
+        'hrana za', 'za pse', 'za macke', 'kozmet', 'aroma', 'svijec', 'miris', 'snizen'];
 
-    /** The latest processed prices, or [] before the first archive is in. */
+    /** Today's prices, fetched on the first call of the day; [] without a key. */
     public function staples(): array
     {
+        $this->ensureFresh();
+
         return Cache::get(self::BASKET_KEY)['prices'] ?? [];
     }
 
-    /** The archive date the prices come from, or null. */
+    /** The shelf-price date the basket comes from, or null. */
     public function priceDate(): ?string
     {
         return Cache::get(self::BASKET_KEY)['date'] ?? null;
     }
 
-    /**
-     * True when cijene.dev lists an archive newer than the processed one.
-     * The listing is asked at most once an hour.
-     */
-    public function stale(): bool
+    /** Fetches the basket unless it was already fetched today. */
+    public function ensureFresh(): void
     {
-        $latest = $this->latestArchive();
-
-        return $latest !== null && $latest['date'] !== $this->priceDate();
-    }
-
-    /** ['date' => ..., 'url' => ...] of the newest archive, or null. */
-    public function latestArchive(): ?array
-    {
-        return Cache::remember('cijene:latest-archive', now()->addHour(), function () {
-            try {
-                $archives = Http::timeout(15)->get(self::LIST_URL)->throw()->json('archives', []);
-                usort($archives, fn ($a, $b) => strcmp($b['date'] ?? '', $a['date'] ?? ''));
-
-                return isset($archives[0]['url'], $archives[0]['date'])
-                    ? ['date' => $archives[0]['date'], 'url' => $archives[0]['url']] : null;
-            } catch (Throwable $error) {
-                report($error);
-
-                return null;
-            }
-        });
+        if (config('fitness.cijene.key') && (Cache::get(self::BASKET_KEY)['fetched'] ?? null) !== now()->toDateString()) {
+            $this->refresh();
+        }
     }
 
     /**
-     * Downloads and processes the newest archive if it is not in yet. One run
-     * at a time; a failure keeps the previous basket. Returns true when a new
-     * basket was stored.
+     * Searches every staple in parallel and stores the basket. One run at a
+     * time; a failure keeps the previous basket. Returns true when stored.
      */
     public function refresh(): bool
     {
-        $lock = Cache::lock('cijene:refresh', 1800);
+        $key = config('fitness.cijene.key');
+        if (! $key) {
+            return false;
+        }
+        $lock = Cache::lock('cijene:refresh', 60);
         if (! $lock->get()) {
             return false;
         }
-        $path = storage_path('app/cijene-'.Str::random(8).'.zip');
         try {
-            Cache::forget('cijene:latest-archive');
-            $latest = $this->latestArchive();
-            if ($latest === null || $latest['date'] === $this->priceDate()) {
-                return false;
+            $responses = Http::pool(fn (Pool $pool) => array_map(
+                fn ($staple) => $pool->as($staple)->withToken($key)->timeout(10)
+                    ->get(self::SEARCH_URL, ['q' => $this->query($staple), 'limit' => 100]),
+                array_keys(self::STAPLES)
+            ));
+            $prices = [];
+            $dates = [];
+            foreach ($responses as $staple => $response) {
+                if (! $response instanceof Response || ! $response->successful()) {
+                    continue;
+                }
+                if ($pick = $this->typical($this->candidates($staple, $response->json('products', [])))) {
+                    $prices[$staple] = $pick;
+                    $dates[] = $pick['date'];
+                    unset($prices[$staple]['date']);
+                }
             }
-            @set_time_limit(0);
-            $response = Http::timeout(600)->withOptions(['sink' => $path])->get($latest['url'])->throw();
-            // A faked or unsinkable response still carries its body.
-            if (! is_file($path) || filesize($path) === 0) {
-                file_put_contents($path, $response->body());
-            }
-            $prices = $this->process($path);
             if ($prices === []) {
-                Log::warning('cijene.dev archive matched no staples', ['date' => $latest['date']]);
+                Log::warning('cijene.dev returned no staple prices');
 
                 return false;
             }
-            Cache::forever(self::BASKET_KEY, ['date' => $latest['date'], 'prices' => $prices]);
+            ksort($prices);
+            Cache::forever(self::BASKET_KEY, ['date' => max($dates), 'fetched' => now()->toDateString(), 'prices' => $prices]);
 
             return true;
         } catch (Throwable $error) {
@@ -160,148 +171,121 @@ class CroatianPrices
 
             return false;
         } finally {
-            @unlink($path);
             $lock->release();
         }
     }
 
-    /**
-     * A typical cheap price for each staple, from an archive on disk. Each
-     * product's shelf unit price (per kg, l or piece, which chains must
-     * publish) is averaged over the chain's stores, so pack sizes compare.
-     */
-    public function process(string $zipPath): array
+    private function query(string $staple): string
     {
-        $zip = new ZipArchive;
-        if ($zip->open($zipPath) !== true) {
-            throw new \RuntimeException('cijene.dev archive could not be opened');
-        }
-        $terms = array_map(fn ($staple) => [$this->normalize($staple[0]),
-            array_map(fn ($word) => $this->normalize($word), $staple[1])], self::STAPLES);
-        $candidates = [];
-        try {
-            $chains = [];
-            for ($i = 0; $i < $zip->numFiles; $i++) {
-                if (preg_match('#^([^/]+)/products\.csv$#', $zip->getNameIndex($i), $match)) {
-                    $chains[] = $match[1];
-                }
-            }
-            foreach ($chains as $chain) {
-                $matched = $this->matchProducts($zip, $chain, $terms);
-                if ($matched === []) {
-                    continue;
-                }
-                foreach ($this->averagePrices($zip, $chain, array_keys($matched)) as $productId => $price) {
-                    foreach ($matched[$productId]['staples'] as $staple) {
-                        $candidates[$staple][] = ['price' => $price, 'unit' => $matched[$productId]['unit'],
-                            'product' => $matched[$productId]['name'], 'chain' => $chain];
-                    }
-                }
-            }
-        } finally {
-            $zip->close();
-        }
-        $best = [];
-        foreach ($candidates as $staple => $items) {
-            if ($pick = $this->typical($items)) {
-                $best[$staple] = $pick;
-            }
-        }
-        ksort($best);
+        $prefix = self::STAPLES[$staple][0];
 
-        return $best;
+        return self::FRESH[$staple] ?? self::QUERIES[$prefix] ?? trim($prefix);
     }
 
     /**
-     * A cheap but real price for a staple: products are compared in the unit
-     * most of them are sold by (kg, l or piece), and the 25th percentile is
-     * taken rather than the minimum, which is usually a clearance line or a
-     * data error.
+     * Every chain's listing of a matching product, as a price per kg, l or
+     * piece. Each chain names and sizes the product itself, so each listing
+     * is judged on its own.
+     */
+    private function candidates(string $staple, array $products): array
+    {
+        [$prefix, $exclusions] = self::STAPLES[$staple];
+        $prefix = $this->normalize($prefix);
+        $exclusions = array_map(fn ($word) => $this->normalize($word), $exclusions);
+        $items = [];
+        foreach ($products as $product) {
+            foreach ($product['chains'] ?? [] as $listing) {
+                $name = $this->normalize($listing['name'] ?? '');
+                $price = (float) ($listing['avg_price'] ?? 0);
+                if ($price <= 0 || $name === '' || ! $this->startsWith($name, $prefix)
+                    || $this->excluded($name, [...self::EXCLUDE, ...$exclusions])
+                    || $this->excluded($this->normalize($listing['category'] ?? ''), self::EXCLUDED_CATEGORIES)) {
+                    continue;
+                }
+                if (isset(self::FRESH[$staple])) {
+                    // Loose only: its average is already per kg or per piece.
+                    $sold = $this->normalize((string) ($listing['unit'] ?? ''));
+                    if (preg_match(self::PACK_SIZE, $name) || preg_match('#\d\s*/\s*\d#', $name)
+                        || ! in_array($sold, ['kg', 'kom', 'ko'], true)) {
+                        continue;
+                    }
+                    [$amount, $unit] = [1, $sold === 'kg' ? 'kg' : 'piece'];
+                } else {
+                    [$amount, $unit] = $this->size($product, $listing);
+                }
+                $items[] = ['price' => round($price / $amount, 2), 'unit' => $unit,
+                    'product' => $listing['name'], 'chain' => $listing['chain'] ?? null,
+                    'date' => $listing['price_date'] ?? now()->toDateString()];
+            }
+        }
+
+        return $items;
+    }
+
+    /**
+     * A cheap but real price for a staple: listings are compared in the unit
+     * most of them are sold by, and the 25th percentile is taken rather than
+     * the minimum, which is usually a clearance line or a data error.
      */
     private function typical(array $items): ?array
     {
+        if ($items === []) {
+            return null;
+        }
         $units = array_count_values(array_column($items, 'unit'));
         arsort($units);
         $unit = array_key_first($units);
         $items = array_values(array_filter($items, fn ($item) => $item['unit'] === $unit));
-        if (count($items) === 0) {
-            return null;
-        }
         usort($items, fn ($a, $b) => $a['price'] <=> $b['price']);
         $pick = $items[(int) floor((count($items) - 1) * 0.25)];
 
         return ['price' => $pick['price'], 'unit' => $unit, 'product' => $pick['product'],
-            'chain' => $pick['chain'], 'products' => count($items)];
+            'chain' => $pick['chain'], 'products' => count($items), 'date' => $pick['date']];
     }
 
-    /** [product_id => ['name' => ..., 'unit' => ..., 'staples' => [english...]]] for one chain. */
-    private function matchProducts(ZipArchive $zip, string $chain, array $terms): array
+    /**
+     * [amount, 'kg'|'l'|'piece'] the listing's price is for. A count in the
+     * name wins ("jaja 10/1", "6 kom"), then cijene.dev's normalised size,
+     * then the chain's own quantity, then a size in the name ("800g"). Loose
+     * produce sold by weight has no size and is already priced per kg.
+     */
+    private function size(array $product, array $listing): array
     {
-        $matched = [];
-        foreach ($this->rows($zip, "{$chain}/products.csv") as $row) {
-            $name = $this->normalize($row['name'] ?? '');
-            if ($name === '' || $this->excluded($name, self::EXCLUDE)
-                || $this->excluded($this->normalize($row['category'] ?? ''), self::EXCLUDED_CATEGORIES)) {
-                continue;
-            }
-            foreach ($terms as $english => [$prefix, $exclusions]) {
-                if ($this->startsWith($name, $prefix) && ! $this->excluded($name, $exclusions)) {
-                    $matched[$row['product_id']] ??= ['name' => $row['name'], 'unit' => $this->baseUnit($row), 'staples' => []];
-                    $matched[$row['product_id']]['staples'][] = $english;
-                }
+        $name = $this->normalize($listing['name'] ?? '');
+        if (preg_match('/(\d+)\s*\/\s*1\b|(\d+)\s*kom\b/u', $name, $count) && ($n = (int) ($count[1] ?: $count[2])) > 1) {
+            return [$n, 'piece'];
+        }
+        $sizes = [
+            [$product['quantity'] ?? null, $product['unit'] ?? null],
+            [$listing['quantity'] ?? null, $listing['unit'] ?? null],
+        ];
+        foreach ($sizes as [$quantity, $unit]) {
+            if ($parsed = $this->measure((string) $quantity, (string) $unit)) {
+                return $parsed;
             }
         }
+        if (preg_match('/(\d+(?:[.,]\d+)?)\s*(kg|dkg|gr|g|l|dl|cl|ml)\b/u', $name, $match)
+            && ($parsed = $this->measure($match[1], $match[2]))) {
+            return $parsed;
+        }
+        $unit = $this->normalize((string) ($listing['unit'] ?? ''));
 
-        return $matched;
+        return in_array($unit, ['kg', 'l'], true) ? [1, $unit] : [1, 'piece'];
     }
 
-    /** Average price per matched product across a chain's stores. */
-    private function averagePrices(ZipArchive $zip, string $chain, array $productIds): array
+    /** "0,100" + "kg", or "0,8 KG" alone, as [amount in kg or l, unit]. */
+    private function measure(string $quantity, string $unit): ?array
     {
-        $wanted = array_flip(array_map('strval', $productIds));
-        $sums = [];
-        foreach ($this->rows($zip, "{$chain}/prices.csv") as $row) {
-            $id = (string) ($row['product_id'] ?? '');
-            if (! isset($wanted[$id])) {
-                continue;
-            }
-            $unitPrice = (float) ($row['unit_price'] ?? 0);
-            if ($unitPrice <= 0) {
-                continue;
-            }
-            $sums[$id] ??= ['total' => 0.0, 'count' => 0];
-            $sums[$id]['total'] += $unitPrice;
-            $sums[$id]['count']++;
+        $text = $this->normalize($quantity.' '.$unit);
+        if (! preg_match('/(\d*[.,]?\d+)\s*(kg|dkg|gr|g|l|dl|cl|ml)\b/u', $text, $match)) {
+            return null;
         }
-        $averages = [];
-        foreach ($sums as $id => $sum) {
-            $averages[$id] = round($sum['total'] / $sum['count'], 2);
-        }
+        $amount = (float) str_replace(',', '.', $match[1]);
+        $scale = ['kg' => [1, 'kg'], 'dkg' => [0.01, 'kg'], 'gr' => [0.001, 'kg'], 'g' => [0.001, 'kg'],
+            'l' => [1, 'l'], 'dl' => [0.1, 'l'], 'cl' => [0.01, 'l'], 'ml' => [0.001, 'l']][$match[2]];
+        $amount *= $scale[0];
 
-        return $averages;
-    }
-
-    /** Streams a CSV from the archive as associative rows. */
-    private function rows(ZipArchive $zip, string $name): \Generator
-    {
-        $stream = $zip->getStream($name);
-        if ($stream === false) {
-            return;
-        }
-        try {
-            $header = fgetcsv($stream, escape: '\\');
-            if (! $header) {
-                return;
-            }
-            $header = array_map(fn ($h) => trim(preg_replace('/^\xEF\xBB\xBF/', '', $h)), $header);
-            while (($values = fgetcsv($stream, escape: '\\')) !== false) {
-                if (count($values) === count($header)) {
-                    yield array_combine($header, $values);
-                }
-            }
-        } finally {
-            fclose($stream);
-        }
+        return $amount > 0 ? [$amount, $scale[1]] : null;
     }
 
     private function normalize(string $text): string
@@ -315,7 +299,7 @@ class CroatianPrices
     private function excluded(string $name, array $words): bool
     {
         foreach ($words as $word) {
-            if (str_contains($name, $word)) {
+            if ($word !== '' && str_contains($name, $word)) {
                 return true;
             }
         }
@@ -331,41 +315,5 @@ class CroatianPrices
         }
 
         return preg_match('/^'.preg_quote($prefix, '/').'(?![\p{L}])/u', $name) === 1;
-    }
-
-    /**
-     * What the shelf unit price is per: kg, l or piece. Chains fill the unit
-     * and quantity columns differently, so the unit column is read first, then
-     * the quantity, then a pack size in the name ("500 g", "1L"); eggs and
-     * other counted goods fall through to piece.
-     */
-    private function baseUnit(array $row): string
-    {
-        // '1kg' and '500g' in the unit column count as the bare unit.
-        $unit = preg_replace('/^[0-9.,\s]+/', '', strtolower(trim($row['unit'] ?? '')));
-        $sources = [$unit, strtolower($row['quantity'] ?? ''), $this->normalize($row['name'] ?? '')];
-        foreach ($sources as $index => $text) {
-            if ($index === 0) {
-                if (in_array($text, ['kg', 'g', 'dkg'], true)) {
-                    return 'kg';
-                }
-                if (in_array($text, ['l', 'ml', 'dl', 'cl'], true)) {
-                    return 'l';
-                }
-                if (in_array($text, ['kom', 'ko', 'kos'], true) && str_contains($sources[1].' '.$sources[2], 'kom')) {
-                    return 'piece';
-                }
-
-                continue;
-            }
-            if (preg_match('/\d\s*(kg|dkg|g|gr)\b/u', $text)) {
-                return 'kg';
-            }
-            if (preg_match('/\d\s*(l|ml|dl|cl)\b/u', $text)) {
-                return 'l';
-            }
-        }
-
-        return 'piece';
     }
 }

@@ -8,8 +8,8 @@ use Illuminate\Support\Facades\Validator;
 /**
  * Seven-day meal plans from MarkAI, built from the user's food and kitchen
  * preferences. In Croatia the plan is priced from real shelf prices (the
- * latest cijene.dev daily archive); elsewhere the model estimates in the
- * chosen currency and the plan says so.
+ * cijene.dev API); elsewhere the model estimates in the chosen currency and
+ * the plan says so.
  */
 class MealPlanner
 {
@@ -25,11 +25,6 @@ class MealPlanner
         $staples = $region === 'HR' ? $this->prices->staples() : [];
         $priced = $staples !== [];
         $priceDate = $priced ? $this->prices->priceDate() : null;
-        // A newer archive is processed after this response is sent, so the
-        // user never waits on a 70 MB download; the next plan uses it.
-        if ($region === 'HR' && $this->prices->stale()) {
-            app()->terminating(fn () => $this->prices->refresh());
-        }
         $priceTable = $priced
             ? "Croatian shelf prices in EUR from {$priceDate} (a cheap typical price across chains, per unit):\n"
                 .collect($staples)->map(fn ($p, $name) => "- {$name}: {$p['price']} EUR per {$p['unit']}")->implode("\n")
@@ -55,6 +50,10 @@ class MealPlanner
                     ['role' => 'user', 'content' => "Preferences (JSON):\n".json_encode($preferences, JSON_UNESCAPED_UNICODE)."\n\n".$priceTable],
                 ],
                 'response_format' => ['type' => 'json_object'], 'max_tokens' => 8000,
+                // Gemini Flash thinks before answering unless told not to, and
+                // on top of a week of JSON that thinking was most of the wait.
+                // The plan is constrained by the prompt, not reasoned out.
+                'reasoning' => ['effort' => 'none'],
             ])->throw();
         $plan = json_decode($response->json('choices.0.message.content', ''), true, 64, JSON_THROW_ON_ERROR);
 

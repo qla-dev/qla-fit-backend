@@ -11,11 +11,11 @@ Artisan::command('inspire', function () {
 
 Artisan::command('prices:refresh', function (CroatianPrices $prices) {
     $this->info($prices->refresh()
-        ? 'Croatian prices updated from the '.$prices->priceDate().' archive.'
-        : 'Croatian prices are already current (or the archive could not be processed).');
-})->purpose('Process the latest cijene.dev daily archive into meal-plan prices');
+        ? 'Croatian prices updated for '.$prices->priceDate().'.'
+        : 'Croatian prices could not be fetched (is CIJENE_API_KEY set?).');
+})->purpose('Fetch the current Croatian staple prices from the cijene.dev API');
 
-// cijene.dev publishes each day's archive around 21:40. Meal plans also
-// refresh it themselves after a response, so this is only a head start on
+// Chains publish the day's prices overnight. The first meal plan of the day
+// fetches them itself (a second or two), so this only saves that wait on
 // servers that run the scheduler.
-Schedule::command('prices:refresh')->dailyAt('22:30')->withoutOverlapping();
+Schedule::command('prices:refresh')->dailyAt('06:00')->withoutOverlapping();
