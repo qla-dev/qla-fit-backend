@@ -7,6 +7,8 @@ return [
     'registration_coins' => 100,
     // A week of meals is one large generation, priced above a chat reply.
     'meal_plan_coins' => 3,
+    // A full macro plan (calories, protein, carbs, fat) from MarkAI.
+    'markai_task_coins' => ['all_macros' => 10],
     // Croatian shelf prices for meal plans; without a key plans are estimated.
     'cijene' => [
         'key' => env('CIJENE_API_KEY'),

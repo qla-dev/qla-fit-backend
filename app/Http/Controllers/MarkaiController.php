@@ -39,11 +39,14 @@ class MarkaiController extends Controller
     {
         $data = $request->validate(['id' => 'required|uuid', 'conversation_id' => 'required|uuid',
             'mode' => ['required', Rule::in(['macros', 'training', 'free'])],
+            // A priced request; see Markai::TASKS and fitness.markai_task_coins.
+            'task' => ['nullable', Rule::in(Markai::TASKS)],
             'prompt' => 'nullable|required_without:image|string|max:6000',
             // A downscaled JPEG from the app, forwarded to the model and never stored.
             'image' => ['nullable', 'string', 'max:4000000', 'regex:#^data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$#']]);
         $image = $data['image'] ?? null;
-        unset($data['image']);
+        $task = $data['task'] ?? null;
+        unset($data['image'], $data['task']);
         $data['prompt'] ??= '';
         $data['has_image'] = $image !== null;
         $user = $request->user();
@@ -64,10 +67,12 @@ class MarkaiController extends Controller
         // Confirmation is determined by application code, never an AI-provided action.
         $confirmation = ! $image && preg_match('/^(?:ok(?:ay)?[,!. ]*)?(?:let[’\x27]?s log(?: it)?|log(?: it| this| that)?|save(?: it| this)?)[.! ]*$/iu', trim($data['prompt'])) === 1;
         $food = $confirmation ? ($lastReply['food'] ?? null) : null;
-        $cost = $food ? 0 : 1;
+        // The server sets the price: a full macro plan is one large piece of
+        // work, priced above a reply, whatever the app asked it to cost.
+        $cost = $food ? 0 : ($task ? (int) config('fitness.markai_task_coins.'.$task) : 1);
         DB::transaction(function () use ($user, $data, $cost) {
             if ($cost) {
-                abort_unless(DB::table('users')->where('id', $user->id)->where('ai_coins', '>=', $cost)->decrement('ai_coins', $cost), 402, 'No AI coins remaining.');
+                abort_unless(DB::table('users')->where('id', $user->id)->where('ai_coins', '>=', $cost)->decrement('ai_coins', $cost), 402, $cost > 1 ? "This needs {$cost} AI coins." : 'No AI coins remaining.');
             }
             DB::table('markai_messages')->insert([...$data, 'user_id' => $user->id, 'status' => 'pending', 'created_at' => now(), 'updated_at' => now()]);
         });
@@ -85,7 +90,7 @@ class MarkaiController extends Controller
                     ? [['type' => 'text', 'text' => $data['prompt'] !== '' ? $data['prompt'] : 'What is in this photo?'],
                         ['type' => 'image_url', 'image_url' => ['url' => $image]]]
                     : $data['prompt']];
-                $reply = [...$ai->reply($data['mode'], $messages), 'food_id' => $data['id'], 'log_requested' => false];
+                $reply = [...$ai->reply($data['mode'], $messages, $task), 'food_id' => $data['id'], 'log_requested' => false];
             }
             DB::table('markai_messages')->where('id', $data['id'])->update(['status' => 'complete', 'reply' => json_encode($reply), 'updated_at' => now()]);
         } catch (\Throwable $error) {

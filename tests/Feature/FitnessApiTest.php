@@ -9,6 +9,7 @@ use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
+use Illuminate\Validation\ValidationException;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
 
@@ -126,6 +127,54 @@ class FitnessApiTest extends TestCase
 
         $this->assertSame(['key' => 'calories', 'value' => 1700], $ai->reply('free', [])['goal']);
         $this->assertNull($ai->reply('free', [])['goal']);
+    }
+
+    public function test_a_full_macro_plan_costs_ten_coins_and_is_refunded_on_failure(): void
+    {
+        $user = $this->member(15);
+        $plan = ['key' => 'macros', 'values' => ['calories' => 2200, 'protein' => 150, 'carbs' => 240, 'fat' => 70]];
+        $this->mock(Markai::class, fn ($mock) => $mock->shouldReceive('reply')
+            ->withArgs(fn ($mode, $messages, $task) => $task === 'all_macros')
+            ->once()->andReturn(['text' => 'TDEE 2 750 × 0.8 …', 'food' => null, 'goal' => $plan]));
+        $body = ['id' => (string) Str::uuid(), 'conversation_id' => (string) Str::uuid(), 'mode' => 'free',
+            'prompt' => 'Work out all my macros', 'task' => 'all_macros'];
+
+        $this->postJson('/api/markai/messages', $body)->assertOk()
+            ->assertJsonPath('data.reply.goal', $plan)->assertJsonPath('data.ai_coins', 5);
+        // A retry of the same request is the same plan, charged once.
+        $this->postJson('/api/markai/messages', $body)->assertOk();
+        $this->assertSame(5, $user->fresh()->ai_coins);
+        // Five coins left is not enough for another.
+        $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid()])
+            ->assertStatus(402)->assertJsonPath('message', 'This needs 10 AI coins.');
+        $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid(), 'task' => 'free_money'])
+            ->assertUnprocessable();
+
+        $this->member(20);
+        $this->mock(Markai::class, fn ($mock) => $mock->shouldReceive('reply')->andThrow(new \RuntimeException('down')));
+        $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid()])->assertStatus(503);
+        $this->assertSame(20, User::latest('id')->first()->ai_coins);
+    }
+
+    public function test_the_macro_plan_must_come_back_as_all_four_macros(): void
+    {
+        config(['fitness.markai.key' => 'test']);
+        $answer = fn (array $reply) => ['choices' => [['message' => ['content' => json_encode($reply)]]]];
+        $plan = ['key' => 'macros', 'values' => ['calories' => 2200, 'protein' => 150, 'carbs' => 240, 'fat' => 70]];
+        Http::fake(['openrouter.ai/*' => Http::sequence()
+            ->push($answer(['text' => 'Plan.', 'food' => null, 'goal' => $plan]))
+            ->push($answer(['text' => 'Protein only.', 'food' => null, 'goal' => ['key' => 'protein', 'value' => 150]]))
+            ->push($answer(['text' => 'Protein.', 'food' => null, 'goal' => ['key' => 'protein', 'value' => 140]]))]);
+        $ai = app(Markai::class);
+
+        $this->assertSame($plan, $ai->reply('free', [], 'all_macros')['goal']);
+        try {
+            $ai->reply('free', [], 'all_macros');
+            $this->fail('A paid plan without all four macros was accepted.');
+        } catch (ValidationException) {
+        }
+        // Outside the plan, a protein goal on its own is fine.
+        $this->assertSame(['key' => 'protein', 'value' => 140], $ai->reply('free', [])['goal']);
     }
 
     public function test_ai_failures_refund_and_zero_balance_cannot_spend(): void
