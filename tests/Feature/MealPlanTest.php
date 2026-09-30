@@ -29,8 +29,8 @@ class MealPlanTest extends TestCase
         return ['title' => 'Budget week', 'summary' => 'Cheap and simple.', 'days' => array_map(fn ($weekday) => [
             'weekday' => $weekday, 'cost' => 99,
             'meals' => [['slot' => 'lunch', 'name' => 'Grah', 'calories' => 600, 'protein' => 30, 'carbs' => 80, 'fat' => 12,
-                'ingredients' => [['name' => 'beans', 'quantity' => 200, 'unit' => 'g', 'price' => 0.75],
-                    ['name' => 'onions', 'quantity' => 1, 'unit' => 'piece', 'price' => 0.5]]]],
+                'ingredients' => [['name' => 'beans', 'quantity' => 200, 'unit' => 'g', 'price' => 0.75, 'staple' => 'Beans'],
+                    ['name' => 'onions', 'quantity' => 1, 'unit' => 'piece', 'price' => 0.5, 'staple' => 'shallots']]]],
         ], range(1, 7))];
     }
 
@@ -50,7 +50,7 @@ class MealPlanTest extends TestCase
     {
         return [
             'grah' => [
-                ['quantity' => '0.500', 'unit' => 'kg', 'chains' => [$this->listing('konzum', 'GRAH BIJELI 500 g', '1.00')]],
+                ['ean' => '3850000000011', 'quantity' => '0.500', 'unit' => 'kg', 'chains' => [$this->listing('konzum', 'GRAH BIJELI 500 g', '1.00')]],
                 ['quantity' => '0.400', 'unit' => 'kg', 'chains' => [$this->listing('konzum', 'GRAH CRVENI 400 g', '1.20')]],
                 ['quantity' => null, 'unit' => null, 'chains' => [
                     $this->listing('lidl', 'Grah smeđi', '4.00', ['unit' => 'kg', 'quantity' => '1']),
@@ -78,6 +78,7 @@ class MealPlanTest extends TestCase
             'api.cijene.dev/v1/products/*' => function (Request $request) use ($searches) {
                 return Http::response(['products' => $searches[$request->data()['q'] ?? ''] ?? []]);
             },
+            'api.cijene.dev/v1/chains/*' => Http::response(['chains' => ['konzum', 'lidl', 'studenac', 'trgovina-krk']]),
             'openrouter.ai/*' => function (Request $request) use ($plan, $onModel) {
                 $onModel && $onModel($request);
 
@@ -143,6 +144,42 @@ class MealPlanTest extends TestCase
         $this->assertSame(['effort' => 'none'], $request['reasoning']);
         // A day's cost is what its ingredients add up to, not the model's figure.
         $response->assertJsonPath('data.plan.days.0.cost', 1.25)->assertJsonPath('data.plan.weekly_cost', 8.75);
+        // An ingredient priced from the basket carries its staple and the
+        // barcode the app finds its photo by; a made-up staple is dropped.
+        $response->assertJsonPath('data.plan.days.0.meals.0.ingredients.0', ['name' => 'beans', 'quantity' => 200,
+            'unit' => 'g', 'price' => 0.75, 'staple' => 'beans', 'product' => 'GRAH BIJELI 500 g', 'ean' => '3850000000011']);
+        $this->assertSame(['name' => 'onions', 'quantity' => 1, 'unit' => 'piece', 'price' => 0.5],
+            $response->json('data.plan.days.0.meals.0.ingredients.1'));
+    }
+
+    public function test_vendors_come_from_the_api_and_each_chain_is_priced_on_its_own(): void
+    {
+        $this->fake($this->week());
+
+        $this->getJson('/api/prices/vendors?region=HR')->assertOk()->assertJsonPath('data.vendors', [
+            ['code' => 'konzum', 'name' => 'Konzum'], ['code' => 'lidl', 'name' => 'Lidl'],
+            ['code' => 'studenac', 'name' => 'Studenac'], ['code' => 'trgovina-krk', 'name' => 'Trgovina Krk'],
+        ]);
+        $this->getJson('/api/prices/vendors?region=BA')->assertOk()->assertJsonPath('data.vendors', []);
+        // Konzum's beans are 2.00 and 3.00 per kg, Lidl's 0.10, 4.00 and 5.00.
+        $this->assertSame(['konzum' => 2.0, 'lidl' => 0.1], app(CroatianPrices::class)->staples()['beans']['chains']);
+    }
+
+    public function test_a_cart_is_compared_across_chains(): void
+    {
+        $this->fake($this->week());
+        $items = [['staple' => 'beans', 'price' => 1.0], ['staple' => null, 'price' => 0.5]];
+
+        // Beans scale by the chain's price over the typical 2.00; the rest
+        // keeps its own price. Studenac and Trgovina Krk have no beans.
+        $this->postJson('/api/prices/compare', ['region' => 'HR', 'items' => $items])->assertOk()
+            ->assertJsonPath('data.price_date', '2026-09-28')
+            ->assertJsonPath('data.vendors', [
+                ['code' => 'lidl', 'name' => 'Lidl', 'total' => 0.55, 'matched' => 1, 'prices' => [0.05, 0.5]],
+                ['code' => 'konzum', 'name' => 'Konzum', 'total' => 1.5, 'matched' => 1, 'prices' => [1, 0.5]],
+            ]);
+        $this->postJson('/api/prices/compare', ['region' => 'DE', 'items' => $items])->assertOk()
+            ->assertJsonPath('data.vendors', []);
     }
 
     public function test_without_a_key_croatian_plans_are_estimated(): void

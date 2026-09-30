@@ -22,8 +22,13 @@ class CroatianPrices
 {
     public const SEARCH_URL = 'https://api.cijene.dev/v1/products/';
 
+    public const CHAINS_URL = 'https://api.cijene.dev/v1/chains/';
+
     /** The basket: ['date' => Y-m-d, 'fetched' => Y-m-d, 'prices' => [english => price info]]. */
     private const BASKET_KEY = 'cijene:basket';
+
+    /** The chain list: ['fetched' => Y-m-d, 'codes' => [code, …]]. */
+    private const VENDORS_KEY = 'cijene:vendors';
 
     /**
      * The basket meal plans are priced from: [english => [prefix, exclusions]].
@@ -115,6 +120,87 @@ class CroatianPrices
     public function priceDate(): ?string
     {
         return Cache::get(self::BASKET_KEY)['date'] ?? null;
+    }
+
+    /**
+     * Every chain cijene.dev collects prices from, as [code, name], asked
+     * once a day; the list is the API's, never a fixed one. [] without a key
+     * or when the API is down and nothing was fetched before.
+     */
+    public function vendors(): array
+    {
+        $key = config('fitness.cijene.key');
+        if (! $key) {
+            return [];
+        }
+        $cached = Cache::get(self::VENDORS_KEY);
+        if (($cached['fetched'] ?? null) !== now()->toDateString()) {
+            try {
+                $codes = Http::withToken($key)->timeout(10)->get(self::CHAINS_URL)->throw()->json('chains', []);
+                if (is_array($codes) && $codes !== []) {
+                    $cached = ['fetched' => now()->toDateString(), 'codes' => array_values(array_filter($codes, 'is_string'))];
+                    Cache::forever(self::VENDORS_KEY, $cached);
+                }
+            } catch (Throwable $error) {
+                report($error);
+            }
+        }
+
+        return array_map(fn ($code) => ['code' => $code, 'name' => $this->vendorName($code)], $cached['codes'] ?? []);
+    }
+
+    /**
+     * What a cart costs at each chain. Items carry the price the plan gave
+     * them and, when it came from the basket, the staple it was priced from;
+     * a chain's price for that staple scales the item by how far it sits from
+     * the typical price. Items a chain has no price for keep their own, and
+     * `matched` says how many it priced. Cheapest well-covered chains first.
+     *
+     * @param  array<int, array{staple?: string|null, price?: float|int|null}>  $items
+     * @return array<int, array{code: string, name: string, total: float, matched: int, prices: array<int, float|null>}>
+     */
+    public function compare(array $items): array
+    {
+        $staples = $this->staples();
+        $comparable = count(array_filter($items, fn ($item) => isset($staples[$item['staple'] ?? ''])));
+        $vendors = [];
+        foreach ($this->vendors() as $vendor) {
+            $total = 0.0;
+            $matched = 0;
+            $prices = [];
+            foreach ($items as $item) {
+                $price = isset($item['price']) ? (float) $item['price'] : null;
+                $staple = $staples[$item['staple'] ?? ''] ?? null;
+                $own = $staple['chains'][$vendor['code']] ?? null;
+                if ($price !== null && $own !== null && $staple['price'] > 0) {
+                    $price = round($price * $own / $staple['price'], 2);
+                    $matched++;
+                }
+                $prices[] = $price;
+                $total += $price ?? 0;
+            }
+            // A chain with none of the cart (a drugstore) says nothing about it.
+            if ($matched > 0 || $comparable === 0) {
+                $vendors[] = [...$vendor, 'total' => round($total, 2), 'matched' => $matched, 'prices' => $prices];
+            }
+        }
+        // A chain that stocks half the cart is not "cheaper" for leaving the
+        // rest at the typical price, so coverage ranks before the total.
+        $covered = fn ($vendor) => $comparable === 0 || $comparable <= $vendor['matched'] * 2;
+        usort($vendors, fn ($a, $b) => [$covered($b), $a['total'], $b['matched']] <=> [$covered($a), $b['total'], $a['matched']]);
+
+        return $vendors;
+    }
+
+    /** "trgovina-krk" as "Trgovina Krk"; a short code is an acronym, "dm" as "DM". */
+    private function vendorName(string $code): string
+    {
+        $words = preg_split('/[-_\s]+/', $code, -1, PREG_SPLIT_NO_EMPTY);
+        if (count($words) === 1 && strlen($code) <= 3) {
+            return strtoupper($code);
+        }
+
+        return implode(' ', array_map('ucfirst', $words));
     }
 
     /** Fetches the basket unless it was already fetched today. */
@@ -215,6 +301,7 @@ class CroatianPrices
                 }
                 $items[] = ['price' => round($price / $amount, 2), 'unit' => $unit,
                     'product' => $listing['name'], 'chain' => $listing['chain'] ?? null,
+                    'ean' => $product['ean'] ?? null,
                     'date' => $listing['price_date'] ?? now()->toDateString()];
             }
         }
@@ -225,7 +312,8 @@ class CroatianPrices
     /**
      * A cheap but real price for a staple: listings are compared in the unit
      * most of them are sold by, and the 25th percentile is taken rather than
-     * the minimum, which is usually a clearance line or a data error.
+     * the minimum, which is usually a clearance line or a data error. Each
+     * chain gets the same pick from its own listings, for the comparison.
      */
     private function typical(array $items): ?array
     {
@@ -238,9 +326,15 @@ class CroatianPrices
         $items = array_values(array_filter($items, fn ($item) => $item['unit'] === $unit));
         usort($items, fn ($a, $b) => $a['price'] <=> $b['price']);
         $pick = $items[(int) floor((count($items) - 1) * 0.25)];
+        $chains = [];
+        foreach (collect($items)->filter(fn ($item) => $item['chain'])->groupBy('chain') as $chain => $listings) {
+            $chains[$chain] = $listings[(int) floor((count($listings) - 1) * 0.25)]['price'];
+        }
+        ksort($chains);
 
         return ['price' => $pick['price'], 'unit' => $unit, 'product' => $pick['product'],
-            'chain' => $pick['chain'], 'products' => count($items), 'date' => $pick['date']];
+            'chain' => $pick['chain'], 'ean' => $pick['ean'], 'chains' => $chains,
+            'products' => count($items), 'date' => $pick['date']];
     }
 
     /**
