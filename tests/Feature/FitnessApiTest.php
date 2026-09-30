@@ -7,6 +7,7 @@ use App\Services\AppleIdentity;
 use App\Services\Markai;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Str;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -108,6 +109,23 @@ class FitnessApiTest extends TestCase
         $this->postJson('/api/markai/messages', $body)->assertOk();
         $this->assertSame(99, $user->fresh()->ai_coins);
         $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid(), 'prompt' => "okay, let's log"])->assertOk()->assertJsonPath('data.reply.log_requested', true)->assertJsonPath('data.reply.food_id', $body['id'])->assertJsonPath('data.ai_coins', 99);
+    }
+
+    public function test_ai_replies_carry_a_proposed_calorie_goal_or_none(): void
+    {
+        config(['fitness.markai.key' => 'test']);
+        $answers = [
+            ['text' => '2 000 × 0.85 ≈ 1 700 kcal.', 'food' => null, 'goal' => ['key' => 'calories', 'value' => 1700]],
+            // Older replies and models that leave goal out.
+            ['text' => 'Hello!', 'food' => null],
+        ];
+        Http::fake(['openrouter.ai/*' => Http::sequence()
+            ->push(['choices' => [['message' => ['content' => json_encode($answers[0])]]]])
+            ->push(['choices' => [['message' => ['content' => json_encode($answers[1])]]]])]);
+        $ai = app(Markai::class);
+
+        $this->assertSame(['key' => 'calories', 'value' => 1700], $ai->reply('free', [])['goal']);
+        $this->assertNull($ai->reply('free', [])['goal']);
     }
 
     public function test_ai_failures_refund_and_zero_balance_cannot_spend(): void
