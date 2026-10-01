@@ -68,6 +68,17 @@ class FitnessApiTest extends TestCase
         $this->assertDatabaseCount('foods', 1);
     }
 
+    public function test_health_tracking_collections_sync(): void
+    {
+        $this->member();
+        $changes = collect(['medications', 'medicationEntries', 'cycleLogs', 'cycles', 'pregnancies', 'pregnancyPhotos'])
+            ->map(fn ($collection) => ['collection' => $collection, 'id' => $collection.'-1', 'base_version' => 0, 'data' => ['id' => $collection.'-1']])
+            ->all();
+        $this->postJson('/api/sync', ['request_id' => (string) Str::uuid(), 'changes' => $changes])->assertOk()
+            ->assertJsonPath('data.tables.medications.0.id', 'medications-1')
+            ->assertJsonPath('data.tables.pregnancyPhotos.0.version', 1);
+    }
+
     public function test_conflict_rolls_back_entire_batch(): void
     {
         $this->member();

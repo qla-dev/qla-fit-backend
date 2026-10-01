@@ -2,7 +2,8 @@
 
 return [
     // Names and JSON records match native/src/services/local, which uses AsyncStorage.
-    'collections' => ['profile', 'preferences', 'goals', 'goalVersions', 'mealTypes', 'waterContainers', 'providers', 'foods', 'variants', 'entries', 'loggedMeals', 'favorites', 'meals', 'exercises', 'activities', 'workouts', 'presets', 'water', 'measurements', 'measurementCategories', 'customMeasurements', 'healthRecords', 'sleep', 'nutrientDisplay', 'progressPhotos', 'workoutPhotos', 'watchMeasurementReceipts', 'markaiReceipts', 'mealPlans', 'mealPlanTemplates'],
+    'collections' => ['profile', 'preferences', 'goals', 'goalVersions', 'mealTypes', 'waterContainers', 'providers', 'foods', 'variants', 'entries', 'loggedMeals', 'favorites', 'meals', 'exercises', 'activities', 'workouts', 'presets', 'water', 'measurements', 'measurementCategories', 'customMeasurements', 'healthRecords', 'sleep', 'nutrientDisplay', 'progressPhotos', 'workoutPhotos', 'watchMeasurementReceipts', 'markaiReceipts', 'mealPlans', 'mealPlanTemplates',
+        'medications', 'medicationSchedules', 'medicationEntries', 'cycleSettings', 'cycleLogs', 'cycles', 'cycleTests', 'symptomEntries', 'pregnancies', 'pregnancyChecklist', 'pregnancyPhotos'],
     'apple_audiences' => array_filter(explode(',', env('APPLE_CLIENT_IDS', 'fitness.qla.dev'))),
     'registration_coins' => 100,
     // A week of meals is one large generation, priced above a chat reply.
