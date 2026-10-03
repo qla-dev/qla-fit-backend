@@ -140,6 +140,22 @@ class FitnessApiTest extends TestCase
         $this->assertNull($ai->reply('free', [])['goal']);
     }
 
+    public function test_carbs_and_fat_can_each_be_proposed_on_their_own_within_range(): void
+    {
+        config(['fitness.markai.key' => 'test']);
+        $reply = fn ($goal) => ['choices' => [['message' => ['content' => json_encode(['text' => 'Worked out.', 'food' => null, 'goal' => $goal])]]]];
+        Http::fake(['openrouter.ai/*' => Http::sequence()
+            ->push($reply(['key' => 'carbs', 'value' => 260]))
+            ->push($reply(['key' => 'fat', 'value' => 80]))
+            ->push($reply(['key' => 'fat', 'value' => 900]))]);
+        $ai = app(Markai::class);
+
+        $this->assertSame(['key' => 'carbs', 'value' => 260], $ai->reply('free', [])['goal']);
+        $this->assertSame(['key' => 'fat', 'value' => 80], $ai->reply('free', [])['goal']);
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+        $ai->reply('free', []);
+    }
+
     public function test_a_full_macro_plan_costs_ten_coins_and_is_refunded_on_failure(): void
     {
         $user = $this->member(15);
