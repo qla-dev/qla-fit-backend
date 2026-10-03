@@ -17,7 +17,7 @@ class MarkaiController extends Controller
                 ->where('messages.user_id', $request->user()->id)->where('messages.status', 'complete')
                 ->select('messages.conversation_id', 'messages.mode')
                 ->selectRaw('MAX(messages.created_at) as updated_at, COUNT(*) as message_count')
-                ->selectSub(DB::table('markai_messages as first_message')->select('prompt')
+                ->selectSub(DB::table('markai_messages as first_message')->selectRaw('COALESCE(label, prompt)')
                     ->whereColumn('first_message.conversation_id', 'messages.conversation_id')
                     ->where('first_message.user_id', $request->user()->id)->where('first_message.status', 'complete')
                     ->orderBy('created_at')->orderBy('id')->limit(1), 'title')
@@ -28,7 +28,7 @@ class MarkaiController extends Controller
         $messages = DB::table('markai_messages')->where('user_id', $request->user()->id)
             ->where('conversation_id', $data['conversation_id'])->where('status', 'complete')
             ->orderByDesc('created_at')->limit(100)->get()->reverse()->values()->map(fn ($row) => [
-                'id' => $row->id, 'prompt' => $row->prompt, 'has_image' => (bool) $row->has_image,
+                'id' => $row->id, 'prompt' => $row->prompt, 'label' => $row->label, 'has_image' => (bool) $row->has_image,
                 'reply' => json_decode($row->reply, true),
             ]);
 
@@ -42,6 +42,8 @@ class MarkaiController extends Controller
             // A priced request; see Markai::TASKS and fitness.markai_task_coins.
             'task' => ['nullable', Rule::in(Markai::TASKS)],
             'prompt' => 'nullable|required_without:image|string|max:6000',
+            // Shown in place of a prompt the app wrote for the user.
+            'label' => 'nullable|string|max:200',
             // A downscaled JPEG from the app, forwarded to the model and never stored.
             'image' => ['nullable', 'string', 'max:4000000', 'regex:#^data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$#']]);
         $image = $data['image'] ?? null;

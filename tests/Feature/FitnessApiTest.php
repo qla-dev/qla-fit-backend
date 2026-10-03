@@ -199,6 +199,21 @@ class FitnessApiTest extends TestCase
         $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid()])->assertStatus(402);
     }
 
+    public function test_a_labelled_prompt_reaches_the_model_but_history_shows_the_label(): void
+    {
+        $this->member();
+        $prompt = 'Work out my daily calorie goal from my details below. Age: 30';
+        $this->mock(Markai::class, fn ($mock) => $mock->shouldReceive('reply')->once()
+            ->withArgs(fn ($mode, $messages) => end($messages)['content'] === $prompt)
+            ->andReturn(['text' => 'About 2,400 kcal.', 'food' => null]));
+        $conversation = (string) Str::uuid();
+        $this->postJson('/api/markai/messages', ['id' => (string) Str::uuid(), 'conversation_id' => $conversation,
+            'mode' => 'free', 'prompt' => $prompt, 'label' => 'Work out my calorie goal'])->assertOk();
+        $this->getJson('/api/markai/messages')->assertOk()->assertJsonPath('data.0.title', 'Work out my calorie goal');
+        $this->getJson('/api/markai/messages?conversation_id='.$conversation)->assertOk()
+            ->assertJsonPath('data.0.label', 'Work out my calorie goal')->assertJsonPath('data.0.prompt', $prompt);
+    }
+
     public function test_ai_photo_messages_reach_the_model_but_are_not_stored(): void
     {
         $this->member();
