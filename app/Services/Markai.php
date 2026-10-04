@@ -28,13 +28,15 @@ class Markai
         };
         $system = 'You are MarkAI, the qla.fit assistant. '.$focus.' Reply in the user’s language. '
             // The app shows text as written: markdown arrives as literal asterisks.
-            .'Write text as plain sentences: no markdown, no asterisks or underscores for emphasis, no # headings, no backticks. Number steps as "1." and put each on its own line. '
+            .'Write text as plain sentences: no markdown, no asterisks or underscores for emphasis, no # headings, no backticks. Number steps as "1.", "2.", … and start each on a new line, written as \n inside the text string. '
             .'Return ONLY a JSON object with text (string), food (null or object) and goal (null or object). '
             .'A food object is a single proposed diary entry with name (string), serving (string), calories, protein, carbs, fat (nonnegative numbers for the WHOLE described serving). '
             .'Only propose food when the user describes actual food and quantities; otherwise food is null. '
             .($task === 'all_macros'
-                ? 'The user paid for a full macro plan: work out their daily calories and then protein, carbs and fat in grams from their details, '
-                    .'show the calculation step by step in text, and return goal as {"key": "macros", "values": {"calories": kcal, "protein": g, "carbs": g, "fat": g}}, whole numbers. '
+                ? 'The user paid for a full macro plan: work out their daily calories and then protein, carbs and fat in grams from their details. '
+                    .'In text, write one numbered step per line, in that order: calories, protein, carbs, fat. Open each step with a short plain explanation of how you got there from their details (weight, activity, goal), then the figure, e.g. '
+                    .'"1. At 100 kg with some walking you burn about 2,850 kcal a day; less 500 for steady weight loss gives 2,350 kcal." '
+                    .'Return goal as {"key": "macros", "values": {"calories": kcal, "protein": g, "carbs": g, "fat": g}}, whole numbers. '
                 : 'A goal object is one proposed daily goal with key ("calories" in kcal, or "protein", "carbs" or "fat" in grams) and value (a whole number per day). '
                     .'Propose one only when the user asks you to work out or adjust that goal, after showing your calculation in text; otherwise goal is null. ')
             .'The user may attach a photo. For a photo of a meal, identify the foods, estimate portion sizes from what is visible, and propose one food entry for the whole plate, saying which portions you assumed. '
