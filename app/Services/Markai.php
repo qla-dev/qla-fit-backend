@@ -15,6 +15,13 @@ class Markai
      */
     public const GOALS = ['calories' => [800, 10000], 'protein' => [20, 500], 'carbs' => [20, 1500], 'fat' => [10, 500]];
 
+    /**
+     * Sessions MarkAI may suggest in Moving help, each with the value range a
+     * suggestion must fall in: minutes, kilometres or kilocalories. The app
+     * shows it as a card that opens workout setup and starts it.
+     */
+    public const WORKOUTS = ['time' => [5, 600], 'distance' => [0.5, 300], 'calories' => [50, 5000]];
+
     /** Requests that cost more than a reply, by what they ask for. */
     public const TASKS = ['all_macros'];
 
@@ -23,13 +30,16 @@ class Markai
         abort_unless(config('fitness.markai.key'), 503, 'MarkAI is not configured yet.');
         $focus = match ($mode) {
             'macros' => 'Estimate food calories and macronutrients. Ask for quantities when missing. Nutrition is an estimate, not a measurement.',
-            'training' => 'Help plan training, explain exercises and adapt sessions to the user’s experience and available equipment.',
+            'training' => 'Help the user move more: plan training, explain exercises and adapt sessions to their experience, fitness and available equipment. '
+                .'End every reply with one session they could start now, introduced in the last line of text, and return it as workout; ask a short question instead only when you cannot suggest anything sensible yet. ',
             default => 'Have a helpful, concise conversation about fitness and everyday questions.',
         };
         $system = 'You are MarkAI, the qla.fit assistant. '.$focus.' Reply in the user’s language. '
             // The app shows text as written: markdown arrives as literal asterisks.
             .'Write text as plain sentences: no markdown, no asterisks or underscores for emphasis, no # headings, no backticks. Number steps as "1.", "2.", … and start each on a new line, written as \n inside the text string. '
-            .'Return ONLY a JSON object with text (string), food (null or object) and goal (null or object). '
+            .'Return ONLY a JSON object with text (string), food (null or object), goal (null or object) and workout (null or object). '
+            .'A workout object is one suggested session with sport ("run" or "ride"), goal ("time" in minutes, "distance" in kilometres, or "calories" in kcal) and value (a number in that unit), e.g. {"sport": "ride", "goal": "time", "value": 30}. '
+            .($mode === 'training' ? '' : 'Outside Moving help, workout is null. ')
             .'A food object is a single proposed diary entry with name (string), serving (string), calories, protein, carbs, fat (nonnegative numbers for the WHOLE described serving). '
             .'Only propose food when the user describes actual food and quantities; otherwise food is null. '
             .($task === 'all_macros'
@@ -56,6 +66,10 @@ class Markai
 
         // Replies from before goals, and models that leave it out, have none.
         $reply['goal'] ??= null;
+        $reply['workout'] ??= null;
+        // Only Moving help suggests sessions.
+        if ($mode !== 'training') $reply['workout'] = null;
+        [$workoutMin, $workoutMax] = self::WORKOUTS[$reply['workout']['goal'] ?? null] ?? [0, 0];
         $key = $reply['goal']['key'] ?? null;
         [$min, $max] = self::GOALS[$key] ?? [0, 0];
 
@@ -69,6 +83,10 @@ class Markai
             'food.fat' => 'required_with:food|numeric|min:0|max:2000',
             // The paid plan must come back as one; nothing else may.
             'goal' => $task === 'all_macros' ? 'required|array' : 'present|nullable|array',
+            'workout' => 'present|nullable|array',
+            'workout.sport' => ['required_with:workout', Rule::in(['run', 'ride'])],
+            'workout.goal' => ['required_with:workout', Rule::in(array_keys(self::WORKOUTS))],
+            'workout.value' => "required_with:workout|numeric|min:{$workoutMin}|max:{$workoutMax}",
             'goal.key' => ['required_with:goal', Rule::in($task === 'all_macros' ? ['macros'] : array_keys(self::GOALS))],
             ...($key === 'macros' ? [
                 'goal.values.calories' => 'required|numeric|min:800|max:10000',

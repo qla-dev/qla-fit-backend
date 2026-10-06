@@ -140,6 +140,24 @@ class FitnessApiTest extends TestCase
         $this->assertNull($ai->reply('free', [])['goal']);
     }
 
+    public function test_moving_help_suggests_one_startable_session_and_other_modes_none(): void
+    {
+        config(['fitness.markai.key' => 'test']);
+        $reply = fn ($workout) => ['choices' => [['message' => ['content' => json_encode(['text' => 'Try an easy ride.', 'food' => null, 'goal' => null, 'workout' => $workout])]]]];
+        $ride = ['sport' => 'ride', 'goal' => 'time', 'value' => 30];
+        Http::fake(['openrouter.ai/*' => Http::sequence()
+            ->push($reply($ride))
+            ->push($reply($ride))
+            ->push($reply(['sport' => 'run', 'goal' => 'distance', 'value' => 900]))]);
+        $ai = app(Markai::class);
+
+        $this->assertSame($ride, $ai->reply('training', [])['workout']);
+        // A session in another mode is dropped rather than shown.
+        $this->assertNull($ai->reply('free', [])['workout']);
+        $this->expectException(\Illuminate\Validation\ValidationException::class);
+        $ai->reply('training', []);
+    }
+
     public function test_carbs_and_fat_can_each_be_proposed_on_their_own_within_range(): void
     {
         config(['fitness.markai.key' => 'test']);
