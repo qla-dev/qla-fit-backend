@@ -6,6 +6,9 @@ return [
         'medications', 'medicationSchedules', 'medicationEntries', 'cycleSettings', 'cycleLogs', 'cycles', 'cycleTests', 'symptomEntries', 'pregnancies', 'pregnancyChecklist', 'pregnancyPhotos'],
     'apple_audiences' => array_filter(explode(',', env('APPLE_CLIENT_IDS', 'fitness.qla.dev'))),
     'registration_coins' => 100,
+    // Plain MarkAI replies each user gets free per (UTC) day before a reply
+    // spends a coin. Priced tasks and meal plans always cost coins.
+    'markai_free_daily' => 10,
     // A week of meals is one large generation, priced above a chat reply.
     'meal_plan_coins' => 3,
     // A full macro plan (calories, protein, carbs, fat) from MarkAI.

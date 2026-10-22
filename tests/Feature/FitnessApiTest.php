@@ -17,6 +17,13 @@ class FitnessApiTest extends TestCase
 {
     use RefreshDatabase;
 
+    protected function setUp(): void
+    {
+        parent::setUp();
+        // Coin accounting is tested on its own; the free allowance has its own test.
+        config(['fitness.markai_free_daily' => 0]);
+    }
+
     private function member(int $coins = 100): User
     {
         $user = User::factory()->create(['ai_coins' => $coins]);
@@ -231,6 +238,22 @@ class FitnessApiTest extends TestCase
         $this->assertSame(1, $user->fresh()->ai_coins);
         $this->member(0);
         $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid()])->assertStatus(402);
+    }
+
+    public function test_the_daily_free_replies_come_before_coins(): void
+    {
+        config(['fitness.markai_free_daily' => 2]);
+        $this->member(5);
+        $this->mock(Markai::class, fn ($mock) => $mock->shouldReceive('reply')->times(4)->andReturn(['text' => 'Hi.', 'food' => null]));
+        $send = fn () => $this->postJson('/api/markai/messages', ['id' => (string) Str::uuid(),
+            'conversation_id' => (string) Str::uuid(), 'mode' => 'free', 'prompt' => 'Hi']);
+        $send()->assertOk()->assertJsonPath('data.ai_coins', 5)->assertJsonPath('data.free_messages.used', 1);
+        $send()->assertOk()->assertJsonPath('data.ai_coins', 5)->assertJsonPath('data.free_messages.used', 2);
+        $send()->assertOk()->assertJsonPath('data.ai_coins', 4)->assertJsonPath('data.free_messages.used', 2);
+        $this->getJson('/api/account')->assertOk()->assertJsonPath('data.free_messages', ['limit' => 2, 'used' => 2]);
+        // Yesterday's free replies do not count today.
+        DB::table('markai_messages')->update(['created_at' => now()->subDay()]);
+        $send()->assertOk()->assertJsonPath('data.ai_coins', 4)->assertJsonPath('data.free_messages.used', 1);
     }
 
     public function test_a_labelled_prompt_reaches_the_model_but_history_shows_the_label(): void

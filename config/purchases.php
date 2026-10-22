@@ -18,7 +18,10 @@ return [
 
     // product id => AI coins it adds.
     'coin_products' => [
+        'fitness.qla.dev.coins50' => 50,
         'fitness.qla.dev.coins100' => 100,
+        'fitness.qla.dev.coins200' => 200,
+        // No longer sold; kept so an earlier purchase still verifies.
         'fitness.qla.dev.coins500' => 500,
     ],
 

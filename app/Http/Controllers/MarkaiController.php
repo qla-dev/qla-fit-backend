@@ -59,7 +59,8 @@ class MarkaiController extends Controller
                 && $previous->conversation_id === $data['conversation_id'] && $previous->mode === $data['mode'], 409);
             abort_unless($previous->status === 'complete', 409, 'This message is pending or failed. Start a new request.');
 
-            return response()->json(['data' => ['id' => $previous->id, 'reply' => json_decode($previous->reply, true), 'ai_coins' => $user->ai_coins]]);
+            return response()->json(['data' => ['id' => $previous->id, 'reply' => json_decode($previous->reply, true), 'ai_coins' => $user->ai_coins,
+                'free_messages' => $user->freeMessages()]]);
         }
         $history = DB::table('markai_messages')->where('user_id', $user->id)
             ->where('conversation_id', $data['conversation_id'])->where('mode', $data['mode'])
@@ -72,7 +73,19 @@ class MarkaiController extends Controller
         // The server sets the price: a full macro plan is one large piece of
         // work, priced above a reply, whatever the app asked it to cost.
         $cost = $food ? 0 : ($task ? (int) config('fitness.markai_task_coins.'.$task) : 1);
-        DB::transaction(function () use ($user, $data, $cost) {
+        // A plain reply spends the daily free allowance first. The user row is
+        // locked so two requests at once cannot both take the last free one.
+        $free = false;
+        DB::transaction(function () use ($user, &$data, &$cost, &$free) {
+            if ($cost === 1) {
+                DB::table('users')->where('id', $user->id)->lockForUpdate()->first();
+                $usage = $user->freeMessages();
+                $free = $usage['used'] < $usage['limit'];
+                if ($free) {
+                    $cost = 0;
+                }
+            }
+            $data['free'] = $free;
             if ($cost) {
                 abort_unless(DB::table('users')->where('id', $user->id)->where('ai_coins', '>=', $cost)->decrement('ai_coins', $cost), 402, $cost > 1 ? "This needs {$cost} AI coins." : 'No AI coins remaining.');
             }
@@ -96,15 +109,17 @@ class MarkaiController extends Controller
             }
             DB::table('markai_messages')->where('id', $data['id'])->update(['status' => 'complete', 'reply' => json_encode($reply), 'updated_at' => now()]);
         } catch (\Throwable $error) {
+            // A failed row stops counting against the free allowance by itself.
             DB::transaction(function () use ($data, $user, $cost) {
-                if (DB::table('markai_messages')->where('id', $data['id'])->where('status', 'pending')->update(['status' => 'failed'])) {
+                if (DB::table('markai_messages')->where('id', $data['id'])->where('status', 'pending')->update(['status' => 'failed']) && $cost) {
                     DB::table('users')->where('id', $user->id)->increment('ai_coins', $cost);
                 }
             });
             report($error);
-            abort(503, 'MarkAI could not answer. Your coin was refunded.');
+            abort(503, $cost ? 'MarkAI could not answer. Your coin was refunded.' : 'MarkAI could not answer. Please try again.');
         }
 
-        return response()->json(['data' => ['id' => $data['id'], 'reply' => $reply, 'ai_coins' => (int) $user->fresh()->ai_coins]]);
+        return response()->json(['data' => ['id' => $data['id'], 'reply' => $reply, 'ai_coins' => (int) $user->fresh()->ai_coins,
+            'free_messages' => $user->freeMessages()]]);
     }
 }
