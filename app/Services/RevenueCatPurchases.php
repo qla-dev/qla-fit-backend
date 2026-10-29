@@ -3,71 +3,102 @@
 namespace App\Services;
 
 use App\Models\User;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Http;
 
 /**
  * Grants what an account bought in the app, from RevenueCat's own record of
- * it (REST API v1, secret key). Each store transaction is granted once:
- * coin packages add their coins, and a program price unlocks the one
- * program it was bought for. Same flow as putni-nalozi's credit sync.
+ * it (REST API v1, secret key). Each coin transaction is granted once; the
+ * training level follows the `trainingN` entitlements' expiry. Same flow as
+ * putni-nalozi's credit sync.
  */
 class RevenueCatPurchases
 {
-    /** Programs the account has unlocked. */
+    /** Programs the account's training level unlocks, while it runs. */
     public function programs(User $user): array
     {
-        return DB::table('revenuecat_purchases')->where('user_id', $user->id)
-            ->whereNotNull('program_id')->distinct()->orderBy('program_id')->pluck('program_id')->all();
+        $level = $this->level($user);
+
+        return collect(config('purchases.programs'))->filter(fn (int $needs) => $needs <= $level)
+            ->keys()->sort()->values()->all();
+    }
+
+    /** The training level that is running now, 0 for none. */
+    public function level(User $user): int
+    {
+        $runs = $user->training_level && ($user->training_until === null || $user->training_until->isFuture());
+
+        return $runs ? (int) $user->training_level : 0;
     }
 
     /**
-     * Records the account's unrecorded transactions of `$productId`.
+     * Records the account's unrecorded transactions of a coin package, or
+     * refreshes the training level.
      *
-     * @return array{coins: int, program: ?string}
+     * @return array{coins: int, level: int}
      */
-    public function sync(User $user, string $productId, ?string $programId): array
+    public function sync(User $user, string $productId): array
     {
+        $subscriber = $this->subscriber($user);
+        if (isset(config('purchases.training_products')[$productId])) {
+            return ['coins' => 0, 'level' => $this->applyTraining($user, $subscriber)];
+        }
         $coins = (int) (config('purchases.coin_products')[$productId] ?? 0);
-        $transactions = $this->transactions($user, $productId);
+        // By key, not by dotted path: product ids are full of dots.
+        $purchases = $subscriber['non_subscriptions'] ?? [];
+        $transactions = collect(is_array($purchases) ? ($purchases[$productId] ?? []) : [])
+            ->filter(fn ($transaction) => is_string($transaction['id'] ?? null) && $transaction['id'] !== '')
+            ->sortBy('purchase_date')->values()->all();
 
-        return DB::transaction(function () use ($user, $productId, $programId, $coins, $transactions) {
-            $row = fn (array $transaction, array $grant) => [
-                'user_id' => $user->id, 'transaction_id' => $transaction['id'], 'product_id' => $productId,
-                'purchased_at' => isset($transaction['purchase_date']) ? now()->parse($transaction['purchase_date']) : null,
-                'created_at' => now(), 'updated_at' => now(), 'coins' => 0, 'program_id' => null, ...$grant,
-            ];
-            if ($coins > 0) {
-                $granted = 0;
-                foreach ($transactions as $transaction) {
-                    $granted += DB::table('revenuecat_purchases')->insertOrIgnore($row($transaction, ['coins' => $coins])) * $coins;
-                }
-                if ($granted) {
-                    DB::table('users')->where('id', $user->id)->increment('ai_coins', $granted);
-                }
-
-                return ['coins' => $granted, 'program' => null];
-            }
-            // A program price unlocks one program: the oldest transaction of
-            // that price not already spent on another. One the account owns
-            // is not unlocked twice.
-            if (in_array($programId, $this->programs($user), true)) {
-                return ['coins' => 0, 'program' => $programId];
-            }
-            $used = DB::table('revenuecat_purchases')->where('user_id', $user->id)
-                ->where('product_id', $productId)->lockForUpdate()->pluck('transaction_id')->all();
+        $granted = DB::transaction(function () use ($user, $productId, $coins, $transactions) {
+            $granted = 0;
             foreach ($transactions as $transaction) {
-                if (! in_array($transaction['id'], $used, true)
-                    && DB::table('revenuecat_purchases')->insertOrIgnore($row($transaction, ['program_id' => $programId]))) {
-                    return ['coins' => 0, 'program' => $programId];
-                }
+                $granted += DB::table('revenuecat_purchases')->insertOrIgnore([
+                    'user_id' => $user->id, 'transaction_id' => $transaction['id'], 'product_id' => $productId, 'coins' => $coins,
+                    'purchased_at' => isset($transaction['purchase_date']) ? Carbon::parse($transaction['purchase_date']) : null,
+                    'created_at' => now(), 'updated_at' => now(),
+                ]) * $coins;
             }
-            abort(402, 'No unused purchase of this price was found. Try again in a moment.');
+            if ($granted) {
+                DB::table('users')->where('id', $user->id)->increment('ai_coins', $granted);
+            }
+
+            return $granted;
         });
+
+        return ['coins' => $granted, 'level' => $this->level($user)];
     }
 
-    /** RevenueCat's transactions of one product for this account, oldest first. */
-    private function transactions(User $user, string $productId): array
+    /** The level ran out on our side: ask RevenueCat whether it renewed. */
+    public function refreshTraining(User $user): void
+    {
+        if ($user->training_level && $user->training_until?->isPast() && config('purchases.secret_api_key')) {
+            rescue(fn () => $this->applyTraining($user, $this->subscriber($user)), report: false);
+        }
+    }
+
+    /** The highest level whose entitlement is active; levels include those below. */
+    private function applyTraining(User $user, array $subscriber): int
+    {
+        $level = 0;
+        $until = null;
+        foreach (array_unique(config('purchases.training_products')) as $candidate) {
+            $entitlement = $subscriber['entitlements']['training'.$candidate] ?? null;
+            if (! is_array($entitlement)) {
+                continue;
+            }
+            $expires = is_string($entitlement['expires_date'] ?? null) ? Carbon::parse($entitlement['expires_date']) : null;
+            if (($expires === null || $expires->isFuture()) && $candidate > $level) {
+                [$level, $until] = [$candidate, $expires];
+            }
+        }
+        $user->forceFill(['training_level' => $level ?: null, 'training_until' => $level ? $until : null])->save();
+
+        return $level;
+    }
+
+    private function subscriber(User $user): array
     {
         $key = config('purchases.secret_api_key');
         abort_unless($key, 503, 'Purchases are not configured yet.');
@@ -75,11 +106,6 @@ class RevenueCatPurchases
             ->get('https://api.revenuecat.com/v1/subscribers/'.rawurlencode(config('purchases.app_user_prefix').$user->id));
         abort_unless($response->successful(), 502, 'The purchase could not be verified.');
 
-        // By key, not by dotted path: product ids are full of dots.
-        $purchases = $response->json('subscriber.non_subscriptions') ?? [];
-
-        return collect(is_array($purchases) ? ($purchases[$productId] ?? []) : [])
-            ->filter(fn ($transaction) => is_string($transaction['id'] ?? null) && $transaction['id'] !== '')
-            ->sortBy('purchase_date')->values()->all();
+        return (array) ($response->json('subscriber') ?? []);
     }
 }
