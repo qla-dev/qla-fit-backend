@@ -1,6 +1,7 @@
 <?php
 
 use App\Http\Controllers\AppleSessionController;
+use App\Http\Controllers\GoogleSessionController;
 use App\Http\Controllers\MarkaiController;
 use App\Http\Controllers\MealPlanController;
 use App\Http\Controllers\PriceController;
@@ -11,6 +12,7 @@ use Illuminate\Support\Facades\Route;
 
 Route::post('auth/apple/challenge', [AppleSessionController::class, 'challenge'])->middleware('throttle:20,1');
 Route::post('auth/apple', [AppleSessionController::class, 'store'])->middleware('throttle:10,1');
+Route::post('auth/google', [GoogleSessionController::class, 'store'])->middleware('throttle:10,1');
 // Public shelf prices: a grocery list compares stores without an account.
 Route::middleware('throttle:60,1')->group(function () {
     Route::get('prices/vendors', [PriceController::class, 'vendors']);
