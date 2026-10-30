@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AppleSessionController;
 use App\Http\Controllers\GoogleSessionController;
+use App\Http\Controllers\SignInMethodController;
 use App\Http\Controllers\MarkaiController;
 use App\Http\Controllers\MealPlanController;
 use App\Http\Controllers\PriceController;
@@ -20,6 +21,10 @@ Route::middleware('throttle:60,1')->group(function () {
 });
 Route::middleware(['auth:sanctum', 'throttle:120,1'])->group(function () {
     Route::get('account', [AppleSessionController::class, 'show']);
+    Route::post('account/sign-in-methods/{provider}', [SignInMethodController::class, 'store'])
+        ->whereIn('provider', ['apple', 'google'])->middleware('throttle:10,1');
+    Route::delete('account/sign-in-methods/{provider}', [SignInMethodController::class, 'destroy'])
+        ->whereIn('provider', ['apple', 'google']);
     Route::delete('session', [AppleSessionController::class, 'destroy']);
     Route::apiResource('sync', SyncController::class)->only(['index', 'store']);
     Route::apiResource('records/{collection}/items', RecordController::class)->parameters(['items' => 'record']);
