@@ -137,7 +137,7 @@ class MealPlanTest extends TestCase
 
         $response = $this->postJson('/api/markai/meal-plans', $this->body())->assertOk()
             ->assertJsonPath('data.plan.prices', 'cijene')->assertJsonPath('data.plan.currency', 'EUR')
-            ->assertJsonPath('data.plan.price_date', '2026-09-28')->assertJsonPath('data.ai_coins', 97);
+            ->assertJsonPath('data.plan.price_date', '2026-09-28')->assertJsonPath('data.ai_coins', 90);
 
         $this->assertStringContainsString('- beans: 2 EUR per kg', $request['messages'][1]['content']);
         // No thinking pass before a week of JSON.
@@ -211,7 +211,7 @@ class MealPlanTest extends TestCase
         $body = $this->body();
         $first = $this->postJson('/api/markai/meal-plans', $body)->assertOk()->json('data.plan');
         $this->postJson('/api/markai/meal-plans', $body)->assertOk()->assertJsonPath('data.plan', $first);
-        $this->assertSame(97, $user->fresh()->ai_coins);
+        $this->assertSame(90, $user->fresh()->ai_coins);
     }
 
     public function test_a_failed_plan_refunds_and_an_empty_wallet_is_refused(): void

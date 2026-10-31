@@ -17,9 +17,9 @@ return [
     'registration_coins' => 100,
     // Plain MarkAI replies each user gets free per (UTC) day before a reply
     // spends a coin. Priced tasks and meal plans always cost coins.
-    'markai_free_daily' => 10,
+    'markai_free_daily' => 5,
     // A week of meals is one large generation, priced above a chat reply.
-    'meal_plan_coins' => 3,
+    'meal_plan_coins' => 10,
     // A full macro plan (calories, protein, carbs, fat) from MarkAI.
     'markai_task_coins' => ['all_macros' => 10],
     // Croatian shelf prices for meal plans; without a key plans are estimated.
