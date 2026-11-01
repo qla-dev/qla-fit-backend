@@ -86,6 +86,18 @@ class FitnessApiTest extends TestCase
             ->assertJsonPath('data.tables.pregnancyPhotos.0.version', 1);
     }
 
+    public function test_personal_setup_and_grocery_lists_sync(): void
+    {
+        $this->member();
+        $changes = [
+            ['collection' => 'personalSetup', 'id' => 'local', 'base_version' => 0, 'data' => ['id' => 'local', 'profileDone' => true]],
+            ['collection' => 'groceryLists', 'id' => 'list-1', 'base_version' => 0, 'data' => ['id' => 'list-1', 'scope' => 'local', 'position' => 0]],
+        ];
+        $this->postJson('/api/sync', ['request_id' => (string) Str::uuid(), 'changes' => $changes])->assertOk()
+            ->assertJsonPath('data.tables.personalSetup.0.data.profileDone', true)
+            ->assertJsonPath('data.tables.groceryLists.0.id', 'list-1');
+    }
+
     public function test_conflict_rolls_back_entire_batch(): void
     {
         $this->member();

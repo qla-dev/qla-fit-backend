@@ -2,7 +2,7 @@
 
 return [
     // Names and JSON records match native/src/services/local, which uses AsyncStorage.
-    'collections' => ['profile', 'preferences', 'goals', 'goalVersions', 'mealTypes', 'waterContainers', 'providers', 'foods', 'variants', 'entries', 'loggedMeals', 'favorites', 'meals', 'exercises', 'activities', 'workouts', 'presets', 'water', 'measurements', 'measurementCategories', 'customMeasurements', 'healthRecords', 'sleep', 'nutrientDisplay', 'progressPhotos', 'workoutPhotos', 'watchMeasurementReceipts', 'markaiReceipts', 'mealPlans', 'mealPlanTemplates',
+    'collections' => ['profile', 'preferences', 'goals', 'goalVersions', 'mealTypes', 'waterContainers', 'providers', 'foods', 'variants', 'entries', 'loggedMeals', 'favorites', 'meals', 'exercises', 'activities', 'workouts', 'presets', 'water', 'measurements', 'measurementCategories', 'customMeasurements', 'healthRecords', 'sleep', 'nutrientDisplay', 'progressPhotos', 'workoutPhotos', 'watchMeasurementReceipts', 'markaiReceipts', 'mealPlans', 'mealPlanTemplates', 'personalSetup', 'groceryLists',
         'medications', 'medicationSchedules', 'medicationEntries', 'cycleSettings', 'cycleLogs', 'cycles', 'cycleTests', 'symptomEntries', 'pregnancies', 'pregnancyChecklist', 'pregnancyPhotos'],
     'apple_audiences' => array_filter(explode(',', env('APPLE_CLIENT_IDS', 'fitness.qla.dev'))),
     // Google OAuth clients whose ID tokens are accepted. Public identifiers,
