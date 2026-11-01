@@ -32,6 +32,12 @@ return [
     'prices' => [
         'datagovrs' => (bool) env('DATAGOVRS_PRICES', true),
         'checkjebon' => (bool) env('CHECKJEBON_PRICES', true),
+        // US prices are unavailable until both server-side credentials are set.
+        'kroger' => [
+            'client_id' => env('KROGER_CLIENT_ID'),
+            'client_secret' => env('KROGER_CLIENT_SECRET'),
+            'zip' => env('KROGER_ZIP', '45202'),
+        ],
     ],
     'markai' => [
         'key' => env('OPENROUTER_API_KEY'),

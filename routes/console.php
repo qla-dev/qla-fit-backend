@@ -9,7 +9,7 @@ Artisan::command('inspire', function () {
     $this->comment(Inspiring::quote());
 })->purpose('Display an inspiring quote');
 
-Artisan::command('prices:refresh {region? : HR, RS or NL; every priced region when left out}', function (?string $region = null) {
+Artisan::command('prices:refresh {region? : HR, RS, NL or US; every priced region when left out}', function (?string $region = null) {
     foreach ($region ? [strtoupper($region)] : array_keys(ShelfPrices::REGIONS) as $code) {
         $prices = ShelfPrices::for($code);
         if (! $prices) {
@@ -20,7 +20,7 @@ Artisan::command('prices:refresh {region? : HR, RS or NL; every priced region wh
             $this->warn("{$code} prices could not be fetched from ".$prices::SOURCE.' (switched off, no key, or down); the last good basket is kept.');
         }
     }
-})->purpose('Fetch the current staple shelf prices (Croatia: cijene.dev, Serbia: data.gov.rs, the Netherlands: Checkjebon)');
+})->purpose('Fetch the current staple shelf prices (Croatia: cijene.dev, Serbia: data.gov.rs, the Netherlands: Checkjebon, US: Kroger)');
 
 // Chains publish the day's prices overnight. The first meal plan of the day
 // fetches them itself (a second or two for Croatia, tens of seconds for the

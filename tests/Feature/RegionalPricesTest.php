@@ -6,6 +6,7 @@ use App\Http\Controllers\MealPlanController;
 use App\Models\User;
 use App\Services\CroatianPrices;
 use App\Services\DutchPrices;
+use App\Services\KrogerPrices;
 use App\Services\SerbianPrices;
 use App\Services\ShelfPrices;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -132,10 +133,10 @@ class RegionalPricesTest extends TestCase
     {
         $this->assertSame(array_keys(ShelfPrices::REGIONS), MealPlanController::PRICED_REGIONS);
         $this->assertEmpty(array_diff(MealPlanController::PRICED_REGIONS, MealPlanController::REGIONS));
-        foreach ([SerbianPrices::class, DutchPrices::class] as $class) {
+        foreach ([SerbianPrices::class, DutchPrices::class, KrogerPrices::class] as $class) {
             $this->assertSame(array_keys(CroatianPrices::STAPLES), array_keys($class::STAPLES), $class);
         }
-        $this->assertSame(['cijene', 'datagovrs', 'checkjebon'], array_map(fn ($class) => $class::SOURCE, array_values(ShelfPrices::REGIONS)));
+        $this->assertSame(['cijene', 'datagovrs', 'checkjebon', 'kroger'], array_map(fn ($class) => $class::SOURCE, array_values(ShelfPrices::REGIONS)));
     }
 
     public function test_serbian_retailer_lists_become_a_basket_in_dinars(): void

@@ -24,7 +24,7 @@ use Throwable;
 abstract class ShelfPrices
 {
     /** Regions with real shelf prices, and what prices each. */
-    public const REGIONS = ['HR' => CroatianPrices::class, 'RS' => SerbianPrices::class, 'NL' => DutchPrices::class];
+    public const REGIONS = ['HR' => CroatianPrices::class, 'RS' => SerbianPrices::class, 'NL' => DutchPrices::class, 'US' => KrogerPrices::class];
 
     /** What a plan priced from this basket says in `prices`; also the cache prefix. */
     public const SOURCE = '';

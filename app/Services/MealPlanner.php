@@ -8,7 +8,7 @@ use Illuminate\Support\Facades\Validator;
 /**
  * Seven-day meal plans from MarkAI, built from the user's food and kitchen
  * preferences. Where a region has real shelf prices (ShelfPrices::REGIONS:
- * Croatia, Serbia, the Netherlands) the plan is priced from them, in that
+ * Croatia, Serbia, the Netherlands, US) the plan is priced from them, in that
  * source's currency; elsewhere, or while a source is down with nothing
  * fetched before, the model estimates in the chosen currency and the plan
  * says so.
