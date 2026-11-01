@@ -50,13 +50,15 @@ class MealPlanner
                     ['role' => 'system', 'content' => $system],
                     ['role' => 'user', 'content' => "Preferences (JSON):\n".json_encode($preferences, JSON_UNESCAPED_UNICODE)."\n\n".$priceTable],
                 ],
-                'response_format' => ['type' => 'json_object'], 'max_tokens' => 8000,
+                // A week with every ingredient priced can run past 8000 tokens,
+                // which cut the JSON off mid-way.
+                'response_format' => ['type' => 'json_object'], 'max_tokens' => 16000,
                 // Gemini Flash thinks before answering unless told not to, and
                 // on top of a week of JSON that thinking was most of the wait.
                 // The plan is constrained by the prompt, not reasoned out.
                 'reasoning' => ['effort' => 'none'],
             ])->throw();
-        $plan = json_decode($response->json('choices.0.message.content', ''), true, 64, JSON_THROW_ON_ERROR);
+        $plan = ModelJson::decode((string) $response->json('choices.0.message.content', ''));
 
         $plan = Validator::make($plan, [
             'title' => 'required|string|max:120', 'summary' => 'nullable|string|max:1000',

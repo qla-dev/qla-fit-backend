@@ -62,7 +62,7 @@ class Markai
                 // the default it was slow and spent the reply's token budget.
                 'reasoning' => ['effort' => 'low'],
             ])->throw();
-        $reply = json_decode($response->json('choices.0.message.content', ''), true, 32, JSON_THROW_ON_ERROR);
+        $reply = ModelJson::decode((string) $response->json('choices.0.message.content', ''), 32);
 
         // Replies from before goals, and models that leave it out, have none.
         $reply['goal'] ??= null;

@@ -70,7 +70,7 @@ class MealPlanTest extends TestCase
         ];
     }
 
-    private function fake(array $plan, ?callable $onModel = null): void
+    private function fake(array|string $plan, ?callable $onModel = null): void
     {
         config(['fitness.markai.key' => 'test', 'fitness.cijene.key' => 'cijene-test']);
         $searches = $this->searches();
@@ -82,7 +82,7 @@ class MealPlanTest extends TestCase
             'openrouter.ai/*' => function (Request $request) use ($plan, $onModel) {
                 $onModel && $onModel($request);
 
-                return Http::response(['choices' => [['message' => ['content' => json_encode($plan)]]]]);
+                return Http::response(['choices' => [['message' => ['content' => is_string($plan) ? $plan : json_encode($plan)]]]]);
             },
         ]);
     }
@@ -202,6 +202,19 @@ class MealPlanTest extends TestCase
 
         $this->assertSame(2.0, app(CroatianPrices::class)->staples()['beans']['price']);
         $this->assertSame('2026-09-28', app(CroatianPrices::class)->priceDate());
+    }
+
+    public function test_a_fenced_answer_with_raw_line_breaks_in_its_strings_still_plans(): void
+    {
+        $this->member();
+        // What failed in production: valid JSON but for a raw line break
+        // inside a string (a JSON control character error).
+        $week = $this->week();
+        $week['summary'] = 'Cheap and LINEBREAK simple.';
+        $this->fake("```json\n".str_replace('LINEBREAK', "\n", json_encode($week, JSON_PRETTY_PRINT))."\n```");
+
+        $this->postJson('/api/markai/meal-plans', $this->body(['region' => 'BA', 'currency' => 'BAM']))->assertOk()
+            ->assertJsonPath('data.plan.summary', 'Cheap and   simple.')->assertJsonPath('data.ai_coins', 90);
     }
 
     public function test_a_retry_returns_the_same_plan_without_charging_again(): void
