@@ -14,8 +14,10 @@
  * native/src/services/purchases/products.ts.
  */
 return [
-    // RevenueCat project secret key (sk_…), read on the server only.
+    // RevenueCat project secret key (sk_…, API v2), read on the server only.
     'secret_api_key' => env('REVENUECAT_SECRET_API_KEY'),
+    // The RevenueCat project the v2 API reads from.
+    'project_id' => env('REVENUECAT_PROJECT_ID', 'proj6fab4874'),
     // app_user_id the app logs in to RevenueCat with, before the account id.
     'app_user_prefix' => 'qla-fit-user-',
 

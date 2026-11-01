@@ -5,6 +5,7 @@ namespace Tests\Feature;
 use App\Models\User;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Http\Client\Request;
+use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\Http;
 use Laravel\Sanctum\Sanctum;
 use Tests\TestCase;
@@ -27,24 +28,32 @@ class PurchaseTest extends TestCase
 
     /**
      * RevenueCat's record of the account: [product id => [transaction id, …]]
-     * and [entitlement => expires date]. Read by one fake, so each call
-     * replaces the record the next request sees.
+     * and [entitlement => expires date]. Read by one fake of the v2 API, so
+     * each call replaces the record the next request sees.
      */
     private function bought(array $products, array $entitlements = []): void
     {
-        config(['purchases.secret_api_key' => 'sk_test']);
+        config(['purchases.secret_api_key' => 'sk_test', 'purchases.project_id' => 'proj_test']);
         $fresh = $this->record === null;
         $this->record = [];
         foreach ($products as $product => $ids) {
             foreach ($ids as $index => $id) {
-                $this->record[$product][] = ['id' => $id, 'purchase_date' => "2026-09-30T10:0{$index}:00Z", 'store' => 'app_store'];
+                $this->record[] = ['product_id' => 'prod_'.$product, 'store_purchase_identifier' => $id, 'status' => 'owned',
+                    'purchased_at' => Carbon::parse("2026-09-30T10:0{$index}:00Z")->getTimestampMs(), 'store' => 'app_store'];
             }
         }
-        $this->entitlements = collect($entitlements)->map(fn ($expires) => ['expires_date' => $expires])->all();
+        $this->entitlements = collect($entitlements)->map(fn ($expires, $key) => [
+            'entitlement_id' => 'entl_'.$key, 'expires_at' => Carbon::parse($expires)->getTimestampMs(),
+        ])->values()->all();
         if ($fresh) {
-            Http::fake(['api.revenuecat.com/*' => fn () => Http::response(['subscriber' => [
-                'non_subscriptions' => $this->record, 'entitlements' => $this->entitlements,
-            ]])]);
+            Http::fake(['api.revenuecat.com/*' => fn (Request $request) => Http::response(['items' => match (true) {
+                str_contains($request->url(), '/active_entitlements') => $this->entitlements,
+                str_contains($request->url(), '/purchases') => $this->record,
+                str_contains($request->url(), '/entitlements') => collect([1, 2, 3])
+                    ->map(fn ($level) => ['id' => 'entl_training'.$level, 'lookup_key' => 'training'.$level])->all(),
+                default => collect([...array_keys(config('purchases.coin_products')), ...array_keys(config('purchases.training_products'))])
+                    ->map(fn ($product) => ['id' => 'prod_'.$product, 'store_identifier' => $product])->all(),
+            }, 'next_page' => null])]);
         }
     }
 
@@ -64,8 +73,25 @@ class PurchaseTest extends TestCase
         $this->postJson('/api/purchases', ['product_id' => 'fitness.qla.dev.coins500'])->assertJsonPath('data.ai_coins', 1100);
         $this->postJson('/api/purchases', ['product_id' => 'fitness.qla.dev.coins100'])->assertJsonPath('data.ai_coins', 1200);
         $this->assertSame(1200, $user->fresh()->ai_coins);
-        Http::assertSent(fn (Request $request) => str_ends_with($request->url(), '/subscribers/qla-fit-user-'.$user->id)
+        Http::assertSent(fn (Request $request) => str_contains($request->url(), '/v2/projects/proj_test/customers/qla-fit-user-'.$user->id.'/purchases')
             && $request->hasHeader('Authorization', 'Bearer sk_test'));
+    }
+
+    public function test_a_customer_revenuecat_has_never_seen_owns_nothing(): void
+    {
+        $this->member();
+        config(['purchases.secret_api_key' => 'sk_test']);
+        Http::fake(['api.revenuecat.com/*' => Http::response(['type' => 'resource_missing', 'object' => 'error'], 404)]);
+        $this->postJson('/api/purchases', ['product_id' => 'fitness.qla.dev.coins100'])->assertOk()
+            ->assertJsonPath('data.ai_coins', 100)->assertJsonPath('data.granted.coins', 0);
+    }
+
+    public function test_a_purchase_revenuecat_will_not_confirm_is_not_granted(): void
+    {
+        $this->member();
+        config(['purchases.secret_api_key' => 'sk_test']);
+        Http::fake(['api.revenuecat.com/*' => Http::response(['type' => 'authentication_error'], 401)]);
+        $this->postJson('/api/purchases', ['product_id' => 'fitness.qla.dev.coins100'])->assertStatus(502);
     }
 
     public function test_a_training_level_unlocks_its_programs_and_those_below_while_it_runs(): void
