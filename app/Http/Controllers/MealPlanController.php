@@ -10,8 +10,11 @@ use Illuminate\Validation\Rule;
 
 class MealPlanController extends Controller
 {
-    /** Regions the app offers; HR is priced from real shelf prices. */
+    /** Regions the app offers; PRICED_REGIONS are priced from real shelf prices, the rest estimated. */
     public const REGIONS = ['HR', 'BA', 'RS', 'SI', 'ME', 'MK', 'XK', 'DE', 'AT', 'FR', 'IT', 'ES', 'NL', 'BE', 'CH', 'PL', 'SE', 'GB', 'US'];
+
+    /** Regions with real shelf prices (the keys of ShelfPrices::REGIONS), so the app can group them. */
+    public const PRICED_REGIONS = ['HR', 'RS', 'NL'];
 
     public const CURRENCIES = ['EUR', 'BAM', 'RSD', 'MKD', 'CHF', 'PLN', 'SEK', 'GBP', 'USD'];
 

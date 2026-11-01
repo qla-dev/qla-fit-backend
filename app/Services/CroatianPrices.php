@@ -6,7 +6,6 @@ use Illuminate\Http\Client\Pool;
 use Illuminate\Http\Client\Response;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
-use Illuminate\Support\Facades\Log;
 use Throwable;
 
 /**
@@ -18,14 +17,17 @@ use Throwable;
  * as a small basket that meal plans are priced from. Without CIJENE_API_KEY
  * there is no basket and plans are estimated.
  */
-class CroatianPrices
+class CroatianPrices extends ShelfPrices
 {
+    public const SOURCE = 'cijene';
+
+    public const CURRENCY = 'EUR';
+
+    public const COUNTRY = 'Croatian';
+
     public const SEARCH_URL = 'https://api.cijene.dev/v1/products/';
 
     public const CHAINS_URL = 'https://api.cijene.dev/v1/chains/';
-
-    /** The basket: ['date' => Y-m-d, 'fetched' => Y-m-d, 'prices' => [english => price info]]. */
-    private const BASKET_KEY = 'cijene:basket';
 
     /** The chain list: ['fetched' => Y-m-d, 'codes' => [code, …]]. */
     private const VENDORS_KEY = 'cijene:vendors';
@@ -108,20 +110,6 @@ class CroatianPrices
     private const EXCLUDE = ['sprej', 'maramic', 'naljepnic', 'sampon', 'sapun', 'deterd',
         'hrana za', 'za pse', 'za macke', 'kozmet', 'aroma', 'svijec', 'miris', 'snizen'];
 
-    /** Today's prices, fetched on the first call of the day; [] without a key. */
-    public function staples(): array
-    {
-        $this->ensureFresh();
-
-        return Cache::get(self::BASKET_KEY)['prices'] ?? [];
-    }
-
-    /** The shelf-price date the basket comes from, or null. */
-    public function priceDate(): ?string
-    {
-        return Cache::get(self::BASKET_KEY)['date'] ?? null;
-    }
-
     /**
      * Every chain cijene.dev collects prices from, as [code, name], asked
      * once a day; the list is the API's, never a fixed one. [] without a key
@@ -149,116 +137,28 @@ class CroatianPrices
         return array_map(fn ($code) => ['code' => $code, 'name' => $this->vendorName($code)], $cached['codes'] ?? []);
     }
 
-    /**
-     * What a cart costs at each chain. Items carry the price the plan gave
-     * them and, when it came from the basket, the staple it was priced from;
-     * a chain's price for that staple scales the item by how far it sits from
-     * the typical price. Items a chain has no price for keep their own, and
-     * `matched` says how many it priced. Cheapest well-covered chains first.
-     *
-     * @param  array<int, array{staple?: string|null, price?: float|int|null}>  $items
-     * @return array<int, array{code: string, name: string, total: float, matched: int, prices: array<int, float|null>}>
-     */
-    public function compare(array $items): array
+    public function enabled(): bool
     {
-        $staples = $this->staples();
-        $comparable = count(array_filter($items, fn ($item) => isset($staples[$item['staple'] ?? ''])));
-        $vendors = [];
-        foreach ($this->vendors() as $vendor) {
-            $total = 0.0;
-            $matched = 0;
-            $prices = [];
-            foreach ($items as $item) {
-                $price = isset($item['price']) ? (float) $item['price'] : null;
-                $staple = $staples[$item['staple'] ?? ''] ?? null;
-                $own = $staple['chains'][$vendor['code']] ?? null;
-                if ($price !== null && $own !== null && $staple['price'] > 0) {
-                    $price = round($price * $own / $staple['price'], 2);
-                    $matched++;
-                }
-                $prices[] = $price;
-                $total += $price ?? 0;
-            }
-            // A chain with none of the cart (a drugstore) says nothing about it.
-            if ($matched > 0 || $comparable === 0) {
-                $vendors[] = [...$vendor, 'total' => round($total, 2), 'matched' => $matched, 'prices' => $prices];
-            }
-        }
-        // A chain that stocks half the cart is not "cheaper" for leaving the
-        // rest at the typical price, so coverage ranks before the total.
-        $covered = fn ($vendor) => $comparable === 0 || $comparable <= $vendor['matched'] * 2;
-        usort($vendors, fn ($a, $b) => [$covered($b), $a['total'], $b['matched']] <=> [$covered($a), $b['total'], $a['matched']]);
-
-        return $vendors;
+        return (bool) config('fitness.cijene.key');
     }
 
-    /** "trgovina-krk" as "Trgovina Krk"; a short code is an acronym, "dm" as "DM". */
-    private function vendorName(string $code): string
-    {
-        $words = preg_split('/[-_\s]+/', $code, -1, PREG_SPLIT_NO_EMPTY);
-        if (count($words) === 1 && strlen($code) <= 3) {
-            return strtoupper($code);
-        }
-
-        return implode(' ', array_map('ucfirst', $words));
-    }
-
-    /** Fetches the basket unless it was already fetched today. */
-    public function ensureFresh(): void
-    {
-        if (config('fitness.cijene.key') && (Cache::get(self::BASKET_KEY)['fetched'] ?? null) !== now()->toDateString()) {
-            $this->refresh();
-        }
-    }
-
-    /**
-     * Searches every staple in parallel and stores the basket. One run at a
-     * time; a failure keeps the previous basket. Returns true when stored.
-     */
-    public function refresh(): bool
+    /** Every staple searched in parallel, a second or two. */
+    protected function fetch(): array
     {
         $key = config('fitness.cijene.key');
-        if (! $key) {
-            return false;
-        }
-        $lock = Cache::lock('cijene:refresh', 60);
-        if (! $lock->get()) {
-            return false;
-        }
-        try {
-            $responses = Http::pool(fn (Pool $pool) => array_map(
-                fn ($staple) => $pool->as($staple)->withToken($key)->timeout(10)
-                    ->get(self::SEARCH_URL, ['q' => $this->query($staple), 'limit' => 100]),
-                array_keys(self::STAPLES)
-            ));
-            $prices = [];
-            $dates = [];
-            foreach ($responses as $staple => $response) {
-                if (! $response instanceof Response || ! $response->successful()) {
-                    continue;
-                }
-                if ($pick = $this->typical($this->candidates($staple, $response->json('products', [])))) {
-                    $prices[$staple] = $pick;
-                    $dates[] = $pick['date'];
-                    unset($prices[$staple]['date']);
-                }
+        $responses = Http::pool(fn (Pool $pool) => array_map(
+            fn ($staple) => $pool->as($staple)->withToken($key)->timeout(10)
+                ->get(self::SEARCH_URL, ['q' => $this->query($staple), 'limit' => 100]),
+            array_keys(self::STAPLES)
+        ));
+        $found = [];
+        foreach ($responses as $staple => $response) {
+            if ($response instanceof Response && $response->successful()) {
+                $found[$staple] = $this->candidates($staple, $response->json('products', []) ?? []);
             }
-            if ($prices === []) {
-                Log::warning('cijene.dev returned no staple prices');
-
-                return false;
-            }
-            ksort($prices);
-            Cache::forever(self::BASKET_KEY, ['date' => max($dates), 'fetched' => now()->toDateString(), 'prices' => $prices]);
-
-            return true;
-        } catch (Throwable $error) {
-            report($error);
-
-            return false;
-        } finally {
-            $lock->release();
         }
+
+        return $found;
     }
 
     private function query(string $staple): string
@@ -310,34 +210,6 @@ class CroatianPrices
     }
 
     /**
-     * A cheap but real price for a staple: listings are compared in the unit
-     * most of them are sold by, and the 25th percentile is taken rather than
-     * the minimum, which is usually a clearance line or a data error. Each
-     * chain gets the same pick from its own listings, for the comparison.
-     */
-    private function typical(array $items): ?array
-    {
-        if ($items === []) {
-            return null;
-        }
-        $units = array_count_values(array_column($items, 'unit'));
-        arsort($units);
-        $unit = array_key_first($units);
-        $items = array_values(array_filter($items, fn ($item) => $item['unit'] === $unit));
-        usort($items, fn ($a, $b) => $a['price'] <=> $b['price']);
-        $pick = $items[(int) floor((count($items) - 1) * 0.25)];
-        $chains = [];
-        foreach (collect($items)->filter(fn ($item) => $item['chain'])->groupBy('chain') as $chain => $listings) {
-            $chains[$chain] = $listings[(int) floor((count($listings) - 1) * 0.25)]['price'];
-        }
-        ksort($chains);
-
-        return ['price' => $pick['price'], 'unit' => $unit, 'product' => $pick['product'],
-            'chain' => $pick['chain'], 'ean' => $pick['ean'], 'chains' => $chains,
-            'products' => count($items), 'date' => $pick['date']];
-    }
-
-    /**
      * [amount, 'kg'|'l'|'piece'] the listing's price is for. A count in the
      * name wins ("jaja 10/1", "6 kom"), then cijene.dev's normalised size,
      * then the chain's own quantity, then a size in the name ("800g"). Loose
@@ -358,56 +230,11 @@ class CroatianPrices
                 return $parsed;
             }
         }
-        if (preg_match('/(\d+(?:[.,]\d+)?)\s*(kg|dkg|gr|g|l|dl|cl|ml)\b/u', $name, $match)
-            && ($parsed = $this->measure($match[1], $match[2]))) {
+        if ($parsed = $this->packSize($name)) {
             return $parsed;
         }
         $unit = $this->normalize((string) ($listing['unit'] ?? ''));
 
         return in_array($unit, ['kg', 'l'], true) ? [1, $unit] : [1, 'piece'];
-    }
-
-    /** "0,100" + "kg", or "0,8 KG" alone, as [amount in kg or l, unit]. */
-    private function measure(string $quantity, string $unit): ?array
-    {
-        $text = $this->normalize($quantity.' '.$unit);
-        if (! preg_match('/(\d*[.,]?\d+)\s*(kg|dkg|gr|g|l|dl|cl|ml)\b/u', $text, $match)) {
-            return null;
-        }
-        $amount = (float) str_replace(',', '.', $match[1]);
-        $scale = ['kg' => [1, 'kg'], 'dkg' => [0.01, 'kg'], 'gr' => [0.001, 'kg'], 'g' => [0.001, 'kg'],
-            'l' => [1, 'l'], 'dl' => [0.1, 'l'], 'cl' => [0.01, 'l'], 'ml' => [0.001, 'l']][$match[2]];
-        $amount *= $scale[0];
-
-        return $amount > 0 ? [$amount, $scale[1]] : null;
-    }
-
-    private function normalize(string $text): string
-    {
-        $text = mb_strtolower($text);
-        $text = strtr($text, ['č' => 'c', 'ć' => 'c', 'š' => 's', 'ž' => 'z', 'đ' => 'd']);
-
-        return trim(preg_replace('/\s+/u', ' ', $text));
-    }
-
-    private function excluded(string $name, array $words): bool
-    {
-        foreach ($words as $word) {
-            if ($word !== '' && str_contains($name, $word)) {
-                return true;
-            }
-        }
-
-        return false;
-    }
-
-    /** "pileca prsa" at the start, then a non-letter; "jabuk*" is a stem. */
-    private function startsWith(string $name, string $prefix): bool
-    {
-        if (str_ends_with($prefix, '*')) {
-            return str_starts_with($name, substr($prefix, 0, -1));
-        }
-
-        return preg_match('/^'.preg_quote($prefix, '/').'(?![\p{L}])/u', $name) === 1;
     }
 }

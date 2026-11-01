@@ -2,24 +2,25 @@
 
 namespace App\Http\Controllers;
 
-use App\Services\CroatianPrices;
+use App\Services\ShelfPrices;
 use Illuminate\Http\Request;
 use Illuminate\Validation\Rule;
 
 /**
- * Store chains and what a grocery cart costs at each. Only Croatia publishes
- * shelf prices (cijene.dev); every other region answers with no vendors.
+ * Store chains and what a grocery cart costs at each, in the regions with
+ * real shelf prices (ShelfPrices::REGIONS); every other region answers with
+ * no vendors.
  */
 class PriceController extends Controller
 {
-    public function vendors(Request $request, CroatianPrices $prices)
+    public function vendors(Request $request)
     {
         $region = $request->validate(['region' => ['required', Rule::in(MealPlanController::REGIONS)]])['region'];
 
-        return response()->json(['data' => ['vendors' => $region === 'HR' ? $prices->vendors() : []]]);
+        return response()->json(['data' => ['vendors' => ShelfPrices::for($region)?->vendors() ?? []]]);
     }
 
-    public function compare(Request $request, CroatianPrices $prices)
+    public function compare(Request $request)
     {
         $data = $request->validate([
             'region' => ['required', Rule::in(MealPlanController::REGIONS)],
@@ -27,11 +28,11 @@ class PriceController extends Controller
             'items.*.staple' => 'nullable|string|max:60',
             'items.*.price' => 'nullable|numeric|min:0|max:100000',
         ]);
-        $live = $data['region'] === 'HR';
+        $prices = ShelfPrices::for($data['region']);
 
         return response()->json(['data' => [
-            'vendors' => $live ? $prices->compare($data['items']) : [],
-            'price_date' => $live ? $prices->priceDate() : null,
+            'vendors' => $prices?->compare($data['items']) ?? [],
+            'price_date' => $prices?->priceDate(),
         ]]);
     }
 }

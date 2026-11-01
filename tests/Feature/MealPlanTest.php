@@ -79,6 +79,8 @@ class MealPlanTest extends TestCase
                 return Http::response(['products' => $searches[$request->data()['q'] ?? ''] ?? []]);
             },
             'api.cijene.dev/v1/chains/*' => Http::response(['chains' => ['konzum', 'lidl', 'studenac', 'trgovina-krk']]),
+            // Serbian and Dutch sources are not under test here.
+            'data.gov.rs/*' => Http::response('', 404), 'raw.githubusercontent.com/*' => Http::response('', 404),
             'openrouter.ai/*' => function (Request $request) use ($plan, $onModel) {
                 $onModel && $onModel($request);
 

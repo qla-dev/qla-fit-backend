@@ -27,6 +27,12 @@ return [
     'cijene' => [
         'key' => env('CIJENE_API_KEY'),
     ],
+    // Serbian (data.gov.rs retailer price lists) and Dutch (Checkjebon)
+    // shelf prices need no key; either can be switched off.
+    'prices' => [
+        'datagovrs' => (bool) env('DATAGOVRS_PRICES', true),
+        'checkjebon' => (bool) env('CHECKJEBON_PRICES', true),
+    ],
     'markai' => [
         'key' => env('OPENROUTER_API_KEY'),
         'model' => env('MARKAI_MODEL', 'google/gemini-2.5-flash'),
