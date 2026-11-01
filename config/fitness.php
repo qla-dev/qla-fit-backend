@@ -20,8 +20,9 @@ return [
     'markai_free_daily' => 5,
     // A week of meals is one large generation, priced above a chat reply.
     'meal_plan_coins' => 10,
-    // A full macro plan (calories, protein, carbs, fat) from MarkAI.
-    'markai_task_coins' => ['all_macros' => 10],
+    // A full macro plan (calories, protein, carbs, fat) from MarkAI, and a
+    // week planned in the chat, priced as meal_plan_coins.
+    'markai_task_coins' => ['all_macros' => 10, 'meal_plan' => 10],
     // Croatian shelf prices for meal plans; without a key plans are estimated.
     'cijene' => [
         'key' => env('CIJENE_API_KEY'),

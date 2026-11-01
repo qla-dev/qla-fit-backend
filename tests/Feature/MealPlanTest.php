@@ -217,6 +217,40 @@ class MealPlanTest extends TestCase
             ->assertJsonPath('data.plan.summary', 'Cheap and   simple.')->assertJsonPath('data.ai_coins', 90);
     }
 
+    public function test_a_week_planned_in_the_chat_is_kept_in_its_reply(): void
+    {
+        $user = $this->member();
+        $this->fake($this->week());
+        $conversation = (string) Str::uuid();
+        $message = ['id' => (string) Str::uuid(), 'conversation_id' => $conversation, 'mode' => 'macros',
+            'prompt' => 'Plan my week', 'label' => 'Plan my week', 'task' => 'meal_plan',
+            'preferences' => ['diet' => 'any'], 'region' => 'BA', 'currency' => 'BAM', 'language' => 'en'];
+
+        $this->postJson('/api/markai/messages', $message)->assertOk()
+            ->assertJsonPath('data.ai_coins', 90)->assertJsonPath('data.reply.text', 'Cheap and simple.')
+            ->assertJsonPath('data.reply.meal_plan.title', 'Budget week')->assertJsonPath('data.reply.meal_plan.currency', 'BAM')
+            ->assertJsonCount(7, 'data.reply.meal_plan.days');
+        // The plan comes back with the conversation, and a retry charges nothing.
+        $this->getJson('/api/markai/messages?conversation_id='.$conversation)->assertOk()
+            ->assertJsonPath('data.0.reply.meal_plan.title', 'Budget week');
+        $this->postJson('/api/markai/messages', $message)->assertOk()->assertJsonPath('data.ai_coins', 90);
+        $this->assertSame(90, $user->fresh()->ai_coins);
+
+        // The questionnaire is required, and a plan the model botched refunds.
+        $this->postJson('/api/markai/messages', [...$message, 'id' => (string) Str::uuid(), 'preferences' => null])
+            ->assertUnprocessable();
+    }
+
+    public function test_a_week_the_model_botches_in_the_chat_is_refunded(): void
+    {
+        $user = $this->member();
+        $this->fake('{"title": "cut off');
+        $this->postJson('/api/markai/messages', ['id' => (string) Str::uuid(), 'conversation_id' => (string) Str::uuid(),
+            'mode' => 'macros', 'prompt' => 'Plan my week', 'task' => 'meal_plan',
+            'preferences' => ['diet' => 'any'], 'region' => 'BA', 'currency' => 'BAM'])->assertStatus(503);
+        $this->assertSame(100, $user->fresh()->ai_coins);
+    }
+
     public function test_a_retry_returns_the_same_plan_without_charging_again(): void
     {
         $user = $this->member();

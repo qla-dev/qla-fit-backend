@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Services\Markai;
+use App\Services\MealPlanner;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Validation\Rule;
@@ -35,7 +36,7 @@ class MarkaiController extends Controller
         return response()->json(['data' => $messages]);
     }
 
-    public function store(Request $request, Markai $ai)
+    public function store(Request $request, Markai $ai, MealPlanner $planner)
     {
         $data = $request->validate(['id' => 'required|uuid', 'conversation_id' => 'required|uuid',
             'mode' => ['required', Rule::in(['macros', 'training', 'free'])],
@@ -45,10 +46,17 @@ class MarkaiController extends Controller
             // Shown in place of a prompt the app wrote for the user.
             'label' => 'nullable|string|max:200',
             // A downscaled JPEG from the app, forwarded to the model and never stored.
-            'image' => ['nullable', 'string', 'max:4000000', 'regex:#^data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$#']]);
+            'image' => ['nullable', 'string', 'max:4000000', 'regex:#^data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/]+={0,2}$#'],
+            // A week planned from the food and kitchen questionnaire, as /markai/meal-plans takes it.
+            'preferences' => 'required_if:task,meal_plan|array|max:40',
+            'region' => ['required_if:task,meal_plan', Rule::in(MealPlanController::REGIONS)],
+            'currency' => ['required_if:task,meal_plan', Rule::in(MealPlanController::CURRENCIES)],
+            'language' => 'nullable|string|max:12']);
         $image = $data['image'] ?? null;
         $task = $data['task'] ?? null;
-        unset($data['image'], $data['task']);
+        $week = $task === 'meal_plan' ? [$data['preferences'], $data['region'], $data['currency'], $data['language'] ?? 'en'] : null;
+        abort_if($week && strlen(json_encode($week[0])) > 8000, 422, 'Preferences are too long.');
+        unset($data['image'], $data['task'], $data['preferences'], $data['region'], $data['currency'], $data['language']);
         $data['prompt'] ??= '';
         $data['has_image'] = $image !== null;
         $user = $request->user();
@@ -59,7 +67,7 @@ class MarkaiController extends Controller
                 && $previous->conversation_id === $data['conversation_id'] && $previous->mode === $data['mode'], 409);
             abort_unless($previous->status === 'complete', 409, 'This message is pending or failed. Start a new request.');
 
-            return response()->json(['data' => ['id' => $previous->id, 'reply' => json_decode($previous->reply, true), 'ai_coins' => $user->ai_coins,
+            return response()->json(['data' => ['id' => $previous->id, 'reply' => json_decode($previous->reply, true), 'ai_coins' => (int) $user->fresh()->ai_coins,
                 'free_messages' => $user->freeMessages()]]);
         }
         $history = DB::table('markai_messages')->where('user_id', $user->id)
@@ -95,11 +103,17 @@ class MarkaiController extends Controller
             if ($food) {
                 $reply = ['text' => 'Ready to log the food shown below.', 'food' => $food,
                     'food_id' => $lastReply['food_id'] ?? $last->id, 'log_requested' => true];
+            } elseif ($week) {
+                // A week of JSON takes the model a while.
+                set_time_limit(180);
+                $plan = $planner->plan(...$week);
+                $reply = ['text' => $plan['summary'] ?: $plan['title'], 'food' => null, 'goal' => null, 'workout' => null,
+                    'meal_plan' => $plan, 'food_id' => $data['id'], 'log_requested' => false];
             } else {
                 $messages = [];
                 foreach ($history as $row) {
                     $messages[] = ['role' => 'user', 'content' => $row->has_image ? trim('[The user sent a photo.] '.$row->prompt) : $row->prompt];
-                    $messages[] = ['role' => 'assistant', 'content' => $row->reply];
+                    $messages[] = ['role' => 'assistant', 'content' => $this->context($row->reply)];
                 }
                 $messages[] = ['role' => 'user', 'content' => $image
                     ? [['type' => 'text', 'text' => $data['prompt'] !== '' ? $data['prompt'] : 'What is in this photo?'],
@@ -121,5 +135,17 @@ class MarkaiController extends Controller
 
         return response()->json(['data' => ['id' => $data['id'], 'reply' => $reply, 'ai_coins' => (int) $user->fresh()->ai_coins,
             'free_messages' => $user->freeMessages()]]);
+    }
+
+    /** A stored reply as the model sees it later in the chat: a planned week by its title, not its every ingredient. */
+    private function context(string $reply): string
+    {
+        $decoded = json_decode($reply, true);
+        if (! is_array($decoded['meal_plan'] ?? null)) {
+            return $reply;
+        }
+        $decoded['meal_plan'] = array_intersect_key($decoded['meal_plan'], array_flip(['title', 'summary', 'weekly_cost', 'currency']));
+
+        return json_encode($decoded);
     }
 }

@@ -23,7 +23,7 @@ class Markai
     public const WORKOUTS = ['time' => [5, 600], 'distance' => [0.5, 300], 'calories' => [50, 5000]];
 
     /** Requests that cost more than a reply, by what they ask for. */
-    public const TASKS = ['all_macros'];
+    public const TASKS = ['all_macros', 'meal_plan'];
 
     public function reply(string $mode, array $history, ?string $task = null): array
     {
