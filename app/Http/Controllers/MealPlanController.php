@@ -39,6 +39,10 @@ class MealPlanController extends Controller
         } catch (\Throwable $error) {
             DB::table('users')->where('id', $user->id)->increment('ai_coins', $cost);
             report($error);
+            // Validation of the model's answer is not reported by default.
+            if ($error instanceof \Illuminate\Validation\ValidationException) {
+                \Illuminate\Support\Facades\Log::warning('MarkAI answer failed validation', ['errors' => $error->errors()]);
+            }
             abort(503, 'MarkAI could not plan this week. Your coins were refunded.');
         }
         Cache::put($key, ['plan' => $plan], now()->addDay());

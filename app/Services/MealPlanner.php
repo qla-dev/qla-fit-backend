@@ -58,21 +58,21 @@ class MealPlanner
                 // The plan is constrained by the prompt, not reasoned out.
                 'reasoning' => ['effort' => 'none'],
             ])->throw();
-        $plan = ModelJson::decode((string) $response->json('choices.0.message.content', ''));
+        $plan = $this->tidy(ModelJson::decode((string) $response->json('choices.0.message.content', '')));
 
         $plan = Validator::make($plan, [
             'title' => 'required|string|max:120', 'summary' => 'nullable|string|max:1000',
             'days' => 'required|array|size:7',
             'days.*.weekday' => 'required|integer|between:1,7|distinct',
             'days.*.cost' => 'nullable|numeric|min:0|max:10000',
-            'days.*.meals' => 'required|array|min:1|max:6',
+            'days.*.meals' => 'required|array|min:1|max:8',
             'days.*.meals.*.slot' => 'required|in:breakfast,lunch,dinner,snack',
             'days.*.meals.*.name' => 'required|string|max:160',
             'days.*.meals.*.calories' => 'required|numeric|min:0|max:5000',
             'days.*.meals.*.protein' => 'required|numeric|min:0|max:500',
             'days.*.meals.*.carbs' => 'required|numeric|min:0|max:1000',
             'days.*.meals.*.fat' => 'required|numeric|min:0|max:500',
-            'days.*.meals.*.ingredients' => 'required|array|min:1|max:25',
+            'days.*.meals.*.ingredients' => 'required|array|min:1|max:40',
             'days.*.meals.*.ingredients.*.name' => 'required|string|max:120',
             'days.*.meals.*.ingredients.*.quantity' => 'required|numeric|min:0|max:100000',
             'days.*.meals.*.ingredients.*.unit' => 'required|in:g,ml,piece',
@@ -100,6 +100,52 @@ class MealPlanner
         return [...$plan, 'region' => $region, 'currency' => $priced ? 'EUR' : $currency,
             'weekly_cost' => round($weekly, 2), 'prices' => $priced ? 'cijene' : 'estimate',
             'price_date' => $priceDate];
+    }
+
+    /** Slots the model wrote in the user's language, by the words it uses. */
+    private const SLOTS = [
+        'breakfast' => ['breakfast', 'doručak', 'dorucak', 'zajtrk', 'frühstück', 'fruhstuck', 'petit', 'desayuno', 'colazione', 'śniadanie', 'sniadanie', 'ontbijt', 'frukost'],
+        'lunch' => ['lunch', 'ručak', 'rucak', 'kosilo', 'mittag', 'déjeuner', 'dejeuner', 'almuerzo', 'comida', 'pranzo', 'obiad', 'middag'],
+        'dinner' => ['dinner', 'večera', 'vecera', 'abend', 'dîner', 'diner', 'cena', 'kolacja', 'avondeten', 'supper'],
+    ];
+
+    /**
+     * Mends what the model gets wrong while following the shape: slots and
+     * units written in the user's language, and numbers sent as strings. What
+     * is still wrong after this fails validation.
+     */
+    private function tidy(array $plan): array
+    {
+        foreach ($plan['days'] ?? [] as $d => $day) {
+            if (is_numeric($day['weekday'] ?? null)) {
+                $plan['days'][$d]['weekday'] = (int) $day['weekday'];
+            }
+            foreach (is_array($day['meals'] ?? null) ? $day['meals'] : [] as $m => $meal) {
+                $slot = mb_strtolower(trim((string) ($meal['slot'] ?? '')));
+                $plan['days'][$d]['meals'][$m]['slot'] = collect(self::SLOTS)
+                    ->search(fn ($words) => collect($words)->contains(fn ($word) => str_contains($slot, $word))) ?: 'snack';
+                foreach (['calories', 'protein', 'carbs', 'fat'] as $key) {
+                    if (is_string($meal[$key] ?? null) && is_numeric($meal[$key])) {
+                        $plan['days'][$d]['meals'][$m][$key] = (float) $meal[$key];
+                    }
+                }
+                foreach (is_array($meal['ingredients'] ?? null) ? $meal['ingredients'] : [] as $i => $ingredient) {
+                    $unit = mb_strtolower(trim((string) ($ingredient['unit'] ?? '')));
+                    $plan['days'][$d]['meals'][$m]['ingredients'][$i]['unit'] = match (true) {
+                        in_array($unit, ['g', 'gr', 'gram', 'grams', 'grama', 'gramm'], true) => 'g',
+                        in_array($unit, ['ml', 'mililitar', 'millilitre', 'milliliter'], true) => 'ml',
+                        default => 'piece',
+                    };
+                    foreach (['quantity', 'price'] as $key) {
+                        if (is_string($ingredient[$key] ?? null) && is_numeric($ingredient[$key])) {
+                            $plan['days'][$d]['meals'][$m]['ingredients'][$i][$key] = (float) $ingredient[$key];
+                        }
+                    }
+                }
+            }
+        }
+
+        return $plan;
     }
 
     /**

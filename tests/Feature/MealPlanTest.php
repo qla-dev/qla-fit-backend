@@ -251,6 +251,23 @@ class MealPlanTest extends TestCase
         $this->assertSame(100, $user->fresh()->ai_coins);
     }
 
+    public function test_slots_and_units_in_the_users_language_and_string_numbers_are_mended(): void
+    {
+        $this->member();
+        $week = $this->week();
+        foreach ($week['days'] as &$day) {
+            $day['weekday'] = (string) $day['weekday'];
+            $day['meals'][0] = [...$day['meals'][0], 'slot' => 'Ručak', 'calories' => '600'];
+            $day['meals'][0]['ingredients'][1]['unit'] = 'kom';
+        }
+        unset($day);
+        $this->fake($week);
+
+        $this->postJson('/api/markai/meal-plans', $this->body(['region' => 'BA', 'currency' => 'BAM']))->assertOk()
+            ->assertJsonPath('data.plan.days.0.meals.0.slot', 'lunch')
+            ->assertJsonPath('data.plan.days.0.meals.0.ingredients.1.unit', 'piece');
+    }
+
     public function test_a_retry_returns_the_same_plan_without_charging_again(): void
     {
         $user = $this->member();

@@ -130,6 +130,10 @@ class MarkaiController extends Controller
                 }
             });
             report($error);
+            // Validation of the model's answer is not reported by default.
+            if ($error instanceof \Illuminate\Validation\ValidationException) {
+                \Illuminate\Support\Facades\Log::warning('MarkAI answer failed validation', ['errors' => $error->errors()]);
+            }
             abort(503, $cost ? 'MarkAI could not answer. Your coin was refunded.' : 'MarkAI could not answer. Please try again.');
         }
 
