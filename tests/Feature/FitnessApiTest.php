@@ -122,7 +122,7 @@ class FitnessApiTest extends TestCase
         $this->mock(AppleIdentity::class, fn ($mock) => $mock->shouldReceive('verify')->twice()->andReturn((object) ['sub' => 'apple-user']));
         $id = $this->postJson('/api/auth/apple/challenge')->json('data.id');
         $body = ['identity_token' => 'verified-by-test', 'challenge_id' => $id];
-        $this->postJson('/api/auth/apple', $body)->assertOk()->assertJsonPath('data.user.ai_coins', 100)->assertJsonPath('data.registered', true);
+        $this->postJson('/api/auth/apple', $body)->assertOk()->assertJsonPath('data.user.ai_coins', config('fitness.registration_coins'))->assertJsonPath('data.registered', true);
         $this->postJson('/api/auth/apple', $body)->assertUnprocessable();
         DB::table('users')->update(['ai_coins' => 42]);
         $body['challenge_id'] = $this->postJson('/api/auth/apple/challenge')->json('data.id');

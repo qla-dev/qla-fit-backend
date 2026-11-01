@@ -14,7 +14,7 @@ return [
         // iOS client.
         '669419315944-0nip6j1itvt66ekoqun0jnnh3h221edm.apps.googleusercontent.com',
     ],
-    'registration_coins' => 100,
+    'registration_coins' => 30,
     // Plain MarkAI replies each user gets free per (UTC) day before a reply
     // spends a coin. Priced tasks and meal plans always cost coins.
     'markai_free_daily' => 5,
