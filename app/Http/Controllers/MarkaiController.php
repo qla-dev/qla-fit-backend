@@ -18,16 +18,28 @@ class MarkaiController extends Controller
                 ->where('messages.user_id', $request->user()->id)->where('messages.status', 'complete')
                 ->select('messages.conversation_id')
                 ->selectRaw('MAX(messages.created_at) as updated_at, COUNT(*) as message_count')
-                // A conversation can change mode as it goes; it reopens in its latest one.
+                // A conversation changes mode as it goes; it reopens in the mode its
+                // latest reply was answered in (older replies carry none: their turn's).
                 ->selectSub(DB::table('markai_messages as last_message')->select('mode')
                     ->whereColumn('last_message.conversation_id', 'messages.conversation_id')
                     ->where('last_message.user_id', $request->user()->id)->where('last_message.status', 'complete')
-                    ->orderByDesc('created_at')->orderByDesc('id')->limit(1), 'mode')
+                    ->orderByDesc('created_at')->orderByDesc('id')->limit(1), 'turn_mode')
+                ->selectSub(DB::table('markai_messages as last_message')->select('reply')
+                    ->whereColumn('last_message.conversation_id', 'messages.conversation_id')
+                    ->where('last_message.user_id', $request->user()->id)->where('last_message.status', 'complete')
+                    ->orderByDesc('created_at')->orderByDesc('id')->limit(1), 'last_reply')
                 ->selectSub(DB::table('markai_messages as first_message')->selectRaw('COALESCE(label, prompt)')
                     ->whereColumn('first_message.conversation_id', 'messages.conversation_id')
                     ->where('first_message.user_id', $request->user()->id)->where('first_message.status', 'complete')
                     ->orderBy('created_at')->orderBy('id')->limit(1), 'title')
-                ->groupBy('messages.conversation_id')->orderByDesc('updated_at')->limit(100)->get();
+                ->groupBy('messages.conversation_id')->orderByDesc('updated_at')->limit(100)->get()
+                ->map(function ($thread) {
+                    $mode = json_decode((string) $thread->last_reply, true)['mode'] ?? null;
+                    $thread->mode = in_array($mode, Markai::MODES, true) ? $mode : $thread->turn_mode;
+                    unset($thread->last_reply, $thread->turn_mode);
+
+                    return $thread;
+                });
 
             return response()->json(['data' => $threads]);
         }

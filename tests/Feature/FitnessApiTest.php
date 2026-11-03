@@ -142,18 +142,19 @@ class FitnessApiTest extends TestCase
         $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid(), 'prompt' => "okay, let's log"])->assertOk()->assertJsonPath('data.reply.log_requested', true)->assertJsonPath('data.reply.food_id', $body['id'])->assertJsonPath('data.ai_coins', 99);
     }
 
-    public function test_switching_mode_keeps_the_conversation(): void
+    public function test_the_chat_follows_the_mode_markai_answered_in(): void
     {
         $this->member();
         $conversation = (string) Str::uuid();
+        // Asked for activity in free chat, MarkAI answers as Moving help.
         $this->mock(Markai::class, fn ($mock) => $mock->shouldReceive('reply')->twice()
-            ->andReturnUsing(fn ($mode, $history) => ['text' => 'Turns seen: '.count($history), 'food' => null]));
+            ->andReturnUsing(fn ($mode, $history) => ['text' => 'Turns seen: '.count($history), 'food' => null, 'mode' => 'training']));
         $send = fn ($mode, $prompt) => $this->postJson('/api/markai/messages', ['id' => (string) Str::uuid(),
             'conversation_id' => $conversation, 'mode' => $mode, 'prompt' => $prompt]);
-        $send('free', 'How am I doing?')->assertOk();
+        $send('free', 'Suggest something to do')->assertOk()->assertJsonPath('data.reply.mode', 'training');
         $this->travel(1)->seconds();
-        // The training turn still sees the free-chat turn before it.
-        $send('training', 'Suggest a workout')->assertOk()->assertJsonPath('data.reply.text', 'Turns seen: 3');
+        // The next turn is sent in the mode the chat followed, and sees the first.
+        $send('training', 'Shorter, please')->assertOk()->assertJsonPath('data.reply.text', 'Turns seen: 3');
         $this->getJson('/api/markai/messages')->assertOk()->assertJsonCount(1, 'data')
             ->assertJsonPath('data.0.mode', 'training')->assertJsonPath('data.0.message_count', 2);
     }
