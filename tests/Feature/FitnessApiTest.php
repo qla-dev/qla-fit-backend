@@ -142,6 +142,22 @@ class FitnessApiTest extends TestCase
         $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid(), 'prompt' => "okay, let's log"])->assertOk()->assertJsonPath('data.reply.log_requested', true)->assertJsonPath('data.reply.food_id', $body['id'])->assertJsonPath('data.ai_coins', 99);
     }
 
+    public function test_switching_mode_keeps_the_conversation(): void
+    {
+        $this->member();
+        $conversation = (string) Str::uuid();
+        $this->mock(Markai::class, fn ($mock) => $mock->shouldReceive('reply')->twice()
+            ->andReturnUsing(fn ($mode, $history) => ['text' => 'Turns seen: '.count($history), 'food' => null]));
+        $send = fn ($mode, $prompt) => $this->postJson('/api/markai/messages', ['id' => (string) Str::uuid(),
+            'conversation_id' => $conversation, 'mode' => $mode, 'prompt' => $prompt]);
+        $send('free', 'How am I doing?')->assertOk();
+        $this->travel(1)->seconds();
+        // The training turn still sees the free-chat turn before it.
+        $send('training', 'Suggest a workout')->assertOk()->assertJsonPath('data.reply.text', 'Turns seen: 3');
+        $this->getJson('/api/markai/messages')->assertOk()->assertJsonCount(1, 'data')
+            ->assertJsonPath('data.0.mode', 'training')->assertJsonPath('data.0.message_count', 2);
+    }
+
     public function test_ai_reads_the_device_data_summary_without_storing_it(): void
     {
         $this->member();
@@ -173,20 +189,29 @@ class FitnessApiTest extends TestCase
         $this->assertNull($ai->reply('free', [])['goal']);
     }
 
-    public function test_moving_help_suggests_one_startable_session_and_other_modes_none(): void
+    public function test_any_mode_can_suggest_one_startable_session_and_a_grocery_list(): void
     {
         config(['fitness.markai.key' => 'test']);
-        $reply = fn ($workout) => ['choices' => [['message' => ['content' => json_encode(['text' => 'Try an easy ride.', 'food' => null, 'goal' => null, 'workout' => $workout])]]]];
+        $reply = fn ($workout, $grocery = null) => ['choices' => [['message' => ['content' => json_encode(['text' => 'Try an easy ride.', 'food' => null, 'goal' => null, 'workout' => $workout, 'grocery' => $grocery])]]]];
         $ride = ['sport' => 'ride', 'goal' => 'time', 'value' => 30];
+        $list = ['name' => 'Protein', 'items' => [['name' => 'Greek yogurt', 'quantity' => '1 kg'], ['name' => 'Eggs', 'quantity' => '10']]];
         Http::fake(['openrouter.ai/*' => Http::sequence()
             ->push($reply($ride))
-            ->push($reply($ride))
+            ->push($reply($ride, $list))
+            ->push($reply(null, ['name' => 'Empty', 'items' => []]))
             ->push($reply(['sport' => 'run', 'goal' => 'distance', 'value' => 900]))]);
         $ai = app(Markai::class);
 
         $this->assertSame($ride, $ai->reply('training', [])['workout']);
-        // A session in another mode is dropped rather than shown.
-        $this->assertNull($ai->reply('free', [])['workout']);
+        // Free chat suggests a session too when asked, and can offer a list.
+        $free = $ai->reply('free', []);
+        $this->assertSame($ride, $free['workout']);
+        $this->assertSame($list, $free['grocery']);
+        try {
+            $ai->reply('free', []);
+            $this->fail('An empty grocery list must be rejected.');
+        } catch (\Illuminate\Validation\ValidationException) {
+        }
         $this->expectException(\Illuminate\Validation\ValidationException::class);
         $ai->reply('training', []);
     }

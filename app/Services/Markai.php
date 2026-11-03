@@ -32,14 +32,22 @@ class Markai
             'macros' => 'Estimate food calories and macronutrients. Ask for quantities when missing. Nutrition is an estimate, not a measurement.',
             'training' => 'Help the user move more: plan training, explain exercises and adapt sessions to their experience, fitness and available equipment. '
                 .'End every reply with one session they could start now, introduced in the last line of text, and return it as workout; ask a short question instead only when you cannot suggest anything sensible yet. ',
-            default => 'Have a helpful, concise conversation about fitness and everyday questions.',
+            default => 'Have a helpful, concise conversation about fitness and everyday questions. When the user asks for activity or something to do, suggest one session they could start now and return it as workout.',
         };
-        $system = 'You are MarkAI, the qla.fit assistant. '.$focus.' Reply in the user’s language. '
+        $system = 'You are MarkAI, the qla.fit assistant. '
+            // A fixed persona: in gendered languages (Bosnian, Polish, …) the
+            // assistant's own verbs and adjectives take the masculine form.
+            .'You are male: whenever you refer to yourself, use masculine grammatical forms (e.g. in Bosnian "pregledao sam", "siguran sam", never "pregledala", "sigurna"). '
+            .$focus.' Reply in the user’s language. '
             // The app shows text as written: markdown arrives as literal asterisks.
             .'Write text as plain sentences: no markdown, no asterisks or underscores for emphasis, no # headings, no backticks. Number steps as "1.", "2.", … and start each on a new line, written as \n inside the text string. '
-            .'Return ONLY a JSON object with text (string), food (null or object), goal (null or object) and workout (null or object). '
+            .'Return ONLY a JSON object with text (string), food (null or object), goal (null or object), workout (null or object), grocery (null or object) and modes (null or array). '
+            .'The chat has three modes the user can switch between without losing the conversation: "macros" (food and nutrition estimates), "training" (moving help and workouts) and "free" (anything). The current mode is "'.$mode.'". '
+            .'When the request would be better served in another mode, still answer it, and offer that mode in modes, e.g. ["training"]; otherwise modes is null. Never offer the current mode. '
             .'A workout object is one suggested session with sport ("run" or "ride"), goal ("time" in minutes, "distance" in kilometres, or "calories" in kcal) and value (a number in that unit), e.g. {"sport": "ride", "goal": "time", "value": 30}. '
-            .($mode === 'training' ? '' : 'Outside Moving help, workout is null. ')
+            .'Return workout only with a session you actually suggest; otherwise it is null. '
+            .'A grocery object is a shopping list the user can save with one tap: name (short string) and items (1 to 30 objects with name and quantity, e.g. {"name": "Greek yogurt", "quantity": "1 kg"}). '
+            .'Offer one when you recommend what to eat or buy, for example when they are short of a nutrition goal, and say in the last line of text that they can save it as a list; otherwise grocery is null. Write item names in the user’s language. '
             .'A food object is a single proposed diary entry with name (string), serving (string), calories, protein, carbs, fat (nonnegative numbers for the WHOLE described serving). '
             .'Only propose food when the user describes actual food and quantities; otherwise food is null. '
             .($task === 'all_macros'
@@ -75,8 +83,8 @@ class Markai
         // Replies from before goals, and models that leave it out, have none.
         $reply['goal'] ??= null;
         $reply['workout'] ??= null;
-        // Only Moving help suggests sessions.
-        if ($mode !== 'training') $reply['workout'] = null;
+        $reply['grocery'] ??= null;
+        $reply['modes'] = array_values(array_diff((array) ($reply['modes'] ?? []), [$mode])) ?: null;
         [$workoutMin, $workoutMax] = self::WORKOUTS[$reply['workout']['goal'] ?? null] ?? [0, 0];
         $key = $reply['goal']['key'] ?? null;
         [$min, $max] = self::GOALS[$key] ?? [0, 0];
@@ -92,6 +100,13 @@ class Markai
             // The paid plan must come back as one; nothing else may.
             'goal' => $task === 'all_macros' ? 'required|array' : 'present|nullable|array',
             'workout' => 'present|nullable|array',
+            'grocery' => 'present|nullable|array',
+            'modes' => 'present|nullable|array|max:2',
+            'modes.*' => ['string', Rule::in(['macros', 'training', 'free'])],
+            'grocery.name' => 'required_with:grocery|string|max:80',
+            'grocery.items' => 'required_with:grocery|array|min:1|max:30',
+            'grocery.items.*.name' => 'required|string|max:120',
+            'grocery.items.*.quantity' => 'nullable|string|max:60',
             'workout.sport' => ['required_with:workout', Rule::in(['run', 'ride'])],
             'workout.goal' => ['required_with:workout', Rule::in(array_keys(self::WORKOUTS))],
             'workout.value' => "required_with:workout|numeric|min:{$workoutMin}|max:{$workoutMax}",

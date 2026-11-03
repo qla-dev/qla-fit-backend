@@ -16,13 +16,18 @@ class MarkaiController extends Controller
         if (! isset($data['conversation_id'])) {
             $threads = DB::table('markai_messages as messages')
                 ->where('messages.user_id', $request->user()->id)->where('messages.status', 'complete')
-                ->select('messages.conversation_id', 'messages.mode')
+                ->select('messages.conversation_id')
                 ->selectRaw('MAX(messages.created_at) as updated_at, COUNT(*) as message_count')
+                // A conversation can change mode as it goes; it reopens in its latest one.
+                ->selectSub(DB::table('markai_messages as last_message')->select('mode')
+                    ->whereColumn('last_message.conversation_id', 'messages.conversation_id')
+                    ->where('last_message.user_id', $request->user()->id)->where('last_message.status', 'complete')
+                    ->orderByDesc('created_at')->orderByDesc('id')->limit(1), 'mode')
                 ->selectSub(DB::table('markai_messages as first_message')->selectRaw('COALESCE(label, prompt)')
                     ->whereColumn('first_message.conversation_id', 'messages.conversation_id')
                     ->where('first_message.user_id', $request->user()->id)->where('first_message.status', 'complete')
                     ->orderBy('created_at')->orderBy('id')->limit(1), 'title')
-                ->groupBy('messages.conversation_id', 'messages.mode')->orderByDesc('updated_at')->limit(100)->get();
+                ->groupBy('messages.conversation_id')->orderByDesc('updated_at')->limit(100)->get();
 
             return response()->json(['data' => $threads]);
         }
@@ -75,7 +80,9 @@ class MarkaiController extends Controller
                 'free_messages' => $user->freeMessages()]]);
         }
         $history = DB::table('markai_messages')->where('user_id', $user->id)
-            ->where('conversation_id', $data['conversation_id'])->where('mode', $data['mode'])
+            // The whole conversation, whatever mode each turn was sent in: switching
+            // mode mid-chat keeps what was said, as Lena's mode buttons do.
+            ->where('conversation_id', $data['conversation_id'])
             ->where('status', 'complete')->orderByDesc('created_at')->limit(12)->get()->reverse()->values();
         $last = $history->last();
         $lastReply = $last ? json_decode($last->reply, true) : null;
