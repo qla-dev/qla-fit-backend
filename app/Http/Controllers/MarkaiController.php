@@ -74,6 +74,7 @@ class MarkaiController extends Controller
             'context' => 'nullable|string|max:8000']);
         $image = $data['image'] ?? null;
         $context = $data['context'] ?? null;
+        $language = $data['language'] ?? null;
         $task = $data['task'] ?? null;
         $week = $task === 'meal_plan' ? [$data['preferences'], $data['region'], $data['currency'], $data['language'] ?? 'en'] : null;
         abort_if($week && strlen(json_encode($week[0])) > 8000, 422, 'Preferences are too long.');
@@ -142,7 +143,7 @@ class MarkaiController extends Controller
                     ? [['type' => 'text', 'text' => $data['prompt'] !== '' ? $data['prompt'] : 'What is in this photo?'],
                         ['type' => 'image_url', 'image_url' => ['url' => $image]]]
                     : $data['prompt']];
-                $reply = [...$ai->reply($data['mode'], $messages, $task, $context), 'food_id' => $data['id'], 'log_requested' => false];
+                $reply = [...$ai->reply($data['mode'], $messages, $task, $context, $language), 'food_id' => $data['id'], 'log_requested' => false];
             }
             DB::table('markai_messages')->where('id', $data['id'])->update(['status' => 'complete', 'reply' => json_encode($reply), 'updated_at' => now()]);
         } catch (\Throwable $error) {

@@ -25,10 +25,28 @@ class Markai
     /** The chat's modes: picked once at the start, then followed from each reply. */
     public const MODES = ['macros', 'training', 'free'];
 
+    /**
+     * Bosnian, Croatian and Serbian are one language to the model, which then
+     * drifts into ekavian. The phone's language decides the variant: Serbian
+     * is ekavian, Bosnian and Croatian (and an unknown one) ijekavian.
+     */
+    public static function dialect(?string $language): string
+    {
+        $code = strtolower(substr((string) $language, 0, 2));
+        $ijekavian = 'When writing Bosnian, Croatian or Montenegrin, always use ijekavica (e.g. "posljednje", "vrijeme", "primijetio", "bilježio", "volio", "vježbanje", "lijepo"), never ekavica. ';
+
+        return match ($code) {
+            'sr' => 'The user’s phone is set to Serbian: when writing Serbian, use ekavica (e.g. "poslednje", "vreme", "primetio", "voleo", "vežbanje"). ',
+            'hr' => 'The user’s phone is set to Croatian: write Croatian. '.$ijekavian,
+            'bs' => 'The user’s phone is set to Bosnian: write Bosnian. '.$ijekavian,
+            default => 'If the user writes Bosnian, Croatian or Montenegrin, use ijekavica (e.g. "posljednje", "vrijeme", "primijetio", "volio"); if they write Serbian in ekavica, answer in ekavica; when unsure, use ijekavica. ',
+        };
+    }
+
     /** Requests that cost more than a reply, by what they ask for. */
     public const TASKS = ['all_macros', 'meal_plan'];
 
-    public function reply(string $mode, array $history, ?string $task = null, ?string $context = null): array
+    public function reply(string $mode, array $history, ?string $task = null, ?string $context = null, ?string $language = null): array
     {
         abort_unless(config('fitness.markai.key'), 503, 'MarkAI is not configured yet.');
         // Every skill is always available and stacks, as Lena's skills do: the
@@ -48,6 +66,7 @@ class Markai
             // assistant's own verbs and adjectives take the masculine form.
             .'You are male: whenever you refer to yourself, use masculine grammatical forms (e.g. in Bosnian "pregledao sam", "siguran sam", never "pregledala", "sigurna"). '
             .$focus.' Reply in the user’s language. '
+            .self::dialect($language)
             // The app shows text as written: markdown arrives as literal asterisks.
             .'Write text as plain sentences: no markdown, no asterisks or underscores for emphasis, no # headings, no backticks. Number steps as "1.", "2.", … and start each on a new line, written as \n inside the text string. '
             .'Return ONLY a JSON object with text (string), food (null or object), goal (null or object), workout (null or object), grocery (null or object) and mode ("macros", "training" or "free"). '

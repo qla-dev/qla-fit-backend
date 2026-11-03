@@ -142,6 +142,16 @@ class FitnessApiTest extends TestCase
         $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid(), 'prompt' => "okay, let's log"])->assertOk()->assertJsonPath('data.reply.log_requested', true)->assertJsonPath('data.reply.food_id', $body['id'])->assertJsonPath('data.ai_coins', 99);
     }
 
+    public function test_the_phone_language_picks_ijekavian_or_ekavian(): void
+    {
+        $this->assertStringContainsString('ijekavica', Markai::dialect('hr-BA'));
+        $this->assertStringContainsString('ijekavica', Markai::dialect('bs'));
+        $this->assertStringNotContainsString('ijekavica', Markai::dialect('sr-RS'));
+        $this->assertStringContainsString('ekavica', Markai::dialect('sr-Latn-RS'));
+        // Unknown: follow the user, ijekavian when unsure.
+        $this->assertStringContainsString('when unsure, use ijekavica', Markai::dialect(null));
+    }
+
     public function test_the_chat_follows_the_mode_markai_answered_in(): void
     {
         $this->member();
