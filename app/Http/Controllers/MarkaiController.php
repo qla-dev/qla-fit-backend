@@ -51,12 +51,16 @@ class MarkaiController extends Controller
             'preferences' => 'required_if:task,meal_plan|array|max:40',
             'region' => ['required_if:task,meal_plan', Rule::in(MealPlanController::REGIONS)],
             'currency' => ['required_if:task,meal_plan', Rule::in(MealPlanController::CURRENCIES)],
-            'language' => 'nullable|string|max:12']);
+            'language' => 'nullable|string|max:12',
+            // A summary of the user's own diary and Health data, built on the
+            // device once they allow it. Forwarded to the model, never stored.
+            'context' => 'nullable|string|max:8000']);
         $image = $data['image'] ?? null;
+        $context = $data['context'] ?? null;
         $task = $data['task'] ?? null;
         $week = $task === 'meal_plan' ? [$data['preferences'], $data['region'], $data['currency'], $data['language'] ?? 'en'] : null;
         abort_if($week && strlen(json_encode($week[0])) > 8000, 422, 'Preferences are too long.');
-        unset($data['image'], $data['task'], $data['preferences'], $data['region'], $data['currency'], $data['language']);
+        unset($data['image'], $data['context'], $data['task'], $data['preferences'], $data['region'], $data['currency'], $data['language']);
         $data['prompt'] ??= '';
         $data['has_image'] = $image !== null;
         $user = $request->user();
@@ -119,7 +123,7 @@ class MarkaiController extends Controller
                     ? [['type' => 'text', 'text' => $data['prompt'] !== '' ? $data['prompt'] : 'What is in this photo?'],
                         ['type' => 'image_url', 'image_url' => ['url' => $image]]]
                     : $data['prompt']];
-                $reply = [...$ai->reply($data['mode'], $messages, $task), 'food_id' => $data['id'], 'log_requested' => false];
+                $reply = [...$ai->reply($data['mode'], $messages, $task, $context), 'food_id' => $data['id'], 'log_requested' => false];
             }
             DB::table('markai_messages')->where('id', $data['id'])->update(['status' => 'complete', 'reply' => json_encode($reply), 'updated_at' => now()]);
         } catch (\Throwable $error) {

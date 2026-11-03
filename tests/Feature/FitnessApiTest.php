@@ -142,6 +142,20 @@ class FitnessApiTest extends TestCase
         $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid(), 'prompt' => "okay, let's log"])->assertOk()->assertJsonPath('data.reply.log_requested', true)->assertJsonPath('data.reply.food_id', $body['id'])->assertJsonPath('data.ai_coins', 99);
     }
 
+    public function test_ai_reads_the_device_data_summary_without_storing_it(): void
+    {
+        $this->member();
+        $context = "Today is 2026-11-03.\n2026-11-03: ate 1800 kcal exercise 30 min";
+        $this->mock(Markai::class, fn ($mock) => $mock->shouldReceive('reply')->once()
+            ->withArgs(fn ($mode, $history, $task, $sent) => $sent === $context)
+            ->andReturn(['text' => 'You are on track.', 'food' => null]));
+        $body = ['id' => (string) Str::uuid(), 'conversation_id' => (string) Str::uuid(), 'mode' => 'training', 'prompt' => 'How am I doing?', 'context' => $context];
+        $this->postJson('/api/markai/messages', $body)->assertOk()->assertJsonPath('data.reply.text', 'You are on track.');
+        // The summary is forwarded, never kept with the message.
+        $this->assertStringNotContainsString('1800 kcal', json_encode(DB::table('markai_messages')->first()));
+        $this->postJson('/api/markai/messages', [...$body, 'id' => (string) Str::uuid(), 'context' => str_repeat('x', 8001)])->assertUnprocessable();
+    }
+
     public function test_ai_replies_carry_a_proposed_calorie_goal_or_none(): void
     {
         config(['fitness.markai.key' => 'test']);
