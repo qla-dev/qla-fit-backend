@@ -6,6 +6,7 @@ use App\Services\Markai;
 use App\Services\MealPlanner;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Str;
 use Illuminate\Validation\Rule;
 
 class MarkaiController extends Controller
@@ -30,6 +31,9 @@ class MarkaiController extends Controller
                     ->orderByDesc('created_at')->orderByDesc('id')->limit(1), 'last_reply')
                 ->selectSub(DB::table('markai_messages as first_message')->selectRaw('COALESCE(label, prompt)')
                     ->whereColumn('first_message.conversation_id', 'messages.conversation_id')
+                    // Titled by the user's first turn, never by an opener MarkAI spoke first.
+                    ->where(fn ($turn) => $turn->where('first_message.prompt', '!=', '')
+                        ->orWhereNotNull('first_message.label')->orWhere('first_message.has_image', true))
                     ->where('first_message.user_id', $request->user()->id)->where('first_message.status', 'complete')
                     ->orderBy('created_at')->orderBy('id')->limit(1), 'title')
                 ->groupBy('messages.conversation_id')->orderByDesc('updated_at')->limit(100)->get()
@@ -71,14 +75,19 @@ class MarkaiController extends Controller
             'language' => 'nullable|string|max:12',
             // A summary of the user's own diary and Health data, built on the
             // device once they allow it. Forwarded to the model, never stored.
-            'context' => 'nullable|string|max:8000']);
+            'context' => 'nullable|string|max:8000',
+            // MarkAI's opening message the app showed before the user's first
+            // turn (a tapped notification's text). Kept as the thread's first
+            // reply, free, so the model knows what the user is answering.
+            'opener' => 'nullable|string|max:2000']);
         $image = $data['image'] ?? null;
         $context = $data['context'] ?? null;
+        $opener = $data['opener'] ?? null;
         $language = $data['language'] ?? null;
         $task = $data['task'] ?? null;
         $week = $task === 'meal_plan' ? [$data['preferences'], $data['region'], $data['currency'], $data['language'] ?? 'en'] : null;
         abort_if($week && strlen(json_encode($week[0])) > 8000, 422, 'Preferences are too long.');
-        unset($data['image'], $data['context'], $data['task'], $data['preferences'], $data['region'], $data['currency'], $data['language']);
+        unset($data['image'], $data['context'], $data['opener'], $data['task'], $data['preferences'], $data['region'], $data['currency'], $data['language']);
         $data['prompt'] ??= '';
         $data['has_image'] = $image !== null;
         $user = $request->user();
@@ -91,6 +100,18 @@ class MarkaiController extends Controller
 
             return response()->json(['data' => ['id' => $previous->id, 'reply' => json_decode($previous->reply, true), 'ai_coins' => (int) $user->fresh()->ai_coins,
                 'free_messages' => $user->freeMessages()]]);
+        }
+        // Only a conversation's first turn carries an opener in: a retry or a
+        // later turn never adds a second one.
+        if ($opener !== null && ! DB::table('markai_messages')->where('user_id', $user->id)
+            ->where('conversation_id', $data['conversation_id'])->exists()) {
+            $openerId = (string) Str::uuid();
+            DB::table('markai_messages')->insert(['id' => $openerId, 'user_id' => $user->id,
+                'conversation_id' => $data['conversation_id'], 'mode' => $data['mode'], 'prompt' => '', 'label' => null,
+                'has_image' => false, 'free' => false, 'status' => 'complete',
+                'reply' => json_encode(['text' => $opener, 'food' => null, 'food_id' => $openerId, 'log_requested' => false, 'opener' => true]),
+                // Ahead of the user's turn, which is stamped now.
+                'created_at' => now()->subSecond(), 'updated_at' => now()->subSecond()]);
         }
         $history = DB::table('markai_messages')->where('user_id', $user->id)
             // The whole conversation, whatever mode each turn was sent in: switching
@@ -136,6 +157,12 @@ class MarkaiController extends Controller
             } else {
                 $messages = [];
                 foreach ($history as $row) {
+                    // An opener is MarkAI speaking first, with no user turn before it.
+                    if (json_decode($row->reply, true)['opener'] ?? false) {
+                        $messages[] = ['role' => 'assistant', 'content' => $this->context($row->reply)];
+
+                        continue;
+                    }
                     $messages[] = ['role' => 'user', 'content' => $row->has_image ? trim('[The user sent a photo.] '.$row->prompt) : $row->prompt];
                     $messages[] = ['role' => 'assistant', 'content' => $this->context($row->reply)];
                 }

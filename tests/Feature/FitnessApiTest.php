@@ -169,6 +169,33 @@ class FitnessApiTest extends TestCase
             ->assertJsonPath('data.0.mode', 'training')->assertJsonPath('data.0.message_count', 2);
     }
 
+    public function test_an_opener_starts_the_thread_as_markai_speaking_first_for_free(): void
+    {
+        $user = $this->member();
+        $conversation = (string) Str::uuid();
+        $opener = "Easy day
+
+Keep it light.
+
+Would you like more information or recommendations for today?";
+        $this->mock(Markai::class, fn ($mock) => $mock->shouldReceive('reply')->twice()
+            ->andReturnUsing(fn ($mode, $history) => ['text' => json_encode(array_column($history, 'role')), 'food' => null]));
+        $send = fn ($prompt) => $this->postJson('/api/markai/messages', ['id' => (string) Str::uuid(),
+            'conversation_id' => $conversation, 'mode' => 'training', 'prompt' => $prompt, 'opener' => $opener]);
+        // The model sees the opener as its own turn, with no empty user turn before it.
+        $send('Yes, what should I do?')->assertOk()->assertJsonPath('data.reply.text', '["assistant","user"]')
+            ->assertJsonPath('data.ai_coins', 99);
+        $this->travel(1)->seconds();
+        // A later turn carrying it again never adds a second one.
+        $send('Thanks')->assertOk()->assertJsonPath('data.reply.text', '["assistant","user","assistant","user"]');
+        $this->assertSame(98, $user->fresh()->ai_coins);
+        $this->getJson('/api/markai/messages?conversation_id='.$conversation)->assertOk()->assertJsonCount(3, 'data')
+            ->assertJsonPath('data.0.prompt', '')->assertJsonPath('data.0.reply.opener', true)
+            ->assertJsonPath('data.0.reply.text', $opener);
+        // The thread is titled by the user's first message, not the opener's empty prompt.
+        $this->getJson('/api/markai/messages')->assertOk()->assertJsonPath('data.0.title', 'Yes, what should I do?');
+    }
+
     public function test_ai_reads_the_device_data_summary_without_storing_it(): void
     {
         $this->member();
