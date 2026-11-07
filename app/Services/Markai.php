@@ -46,9 +46,22 @@ class Markai
     /** Requests that cost more than a reply, by what they ask for. */
     public const TASKS = ['all_macros', 'meal_plan'];
 
-    public function reply(string $mode, array $history, ?string $task = null, ?string $context = null, ?string $language = null): array
+    public function reply(string $mode, array $history, ?string $task = null, ?string $context = null, ?string $language = null, ?string $region = null): array
     {
         abort_unless(config('fitness.markai.key'), 503, 'MarkAI is not configured yet.');
+        // A grocery list is priced the way a meal plan is, when the user's
+        // region has real shelf prices: each item names the staple it was
+        // priced from, so the app can compare the list across store chains.
+        $source = $region !== null ? ShelfPrices::for($region) : null;
+        $staples = $source?->staples() ?? [];
+        $groceryPricing = $staples === [] ? '' : (function () use ($source, $staples) {
+            $currency = $source::CURRENCY;
+
+            return $source::COUNTRY." shelf prices in {$currency} from {$source->priceDate()} (a cheap typical price across chains, per unit):\n"
+                .collect($staples)->map(fn ($p, $name) => "- {$name}: {$p['price']} {$currency} per {$p['unit']}")->implode("\n")
+                ."\nGive every grocery item a price (number, {$currency}, for the quantity listed) and a staple: the table name it was priced from, exactly as written, "
+                .'or null for an item not in the table, whose price you estimate. Prefer table items. ';
+        })();
         // Every skill is always available and stacks, as Lena's skills do: the
         // mode the chat started in is only the default focus. Each reply names
         // the mode it was answered in, and the chat follows it on its own; the
@@ -82,6 +95,7 @@ class Markai
             .'Return workout only with a session you actually suggest; otherwise it is null. '
             .'A grocery object is a shopping list the user can save with one tap: name (short string) and items (1 to 30 objects with name and quantity, e.g. {"name": "Greek yogurt", "quantity": "1 kg"}). '
             .'Offer one when you recommend what to eat or buy, for example when they are short of a nutrition goal, and say in the last line of text that they can save it as a list; otherwise grocery is null. Write item names in the user’s language. '
+            .$groceryPricing
             .'A food object is a single proposed diary entry with name (string), serving (string), calories, protein, carbs, fat (nonnegative numbers for the WHOLE described serving). '
             .'Only propose food when the user describes actual food and quantities; otherwise food is null. '
             .($task === 'all_macros'
@@ -123,7 +137,7 @@ class Markai
         $key = $reply['goal']['key'] ?? null;
         [$min, $max] = self::GOALS[$key] ?? [0, 0];
 
-        return Validator::make($reply, [
+        $validated = Validator::make($reply, [
             'text' => 'required|string|max:12000', 'food' => 'present|nullable|array',
             'food.name' => 'required_with:food|string|max:200',
             'food.serving' => 'required_with:food|string|max:200',
@@ -139,6 +153,8 @@ class Markai
             'grocery.items' => 'required_with:grocery|array|min:1|max:30',
             'grocery.items.*.name' => 'required|string|max:120',
             'grocery.items.*.quantity' => 'nullable|string|max:60',
+            'grocery.items.*.price' => 'nullable|numeric|min:0|max:100000',
+            'grocery.items.*.staple' => 'nullable|string|max:60',
             'workout.sport' => ['required_with:workout', Rule::in(['run', 'ride'])],
             'workout.goal' => ['required_with:workout', Rule::in(array_keys(self::WORKOUTS))],
             'workout.value' => "required_with:workout|numeric|min:{$workoutMin}|max:{$workoutMax}",
@@ -150,5 +166,42 @@ class Markai
                 'goal.values.fat' => 'required|numeric|min:0|max:500',
             ] : ['goal.value' => "required_with:goal|numeric|min:{$min}|max:{$max}"]),
         ])->validate();
+
+        return self::priceGrocery($validated, $source, $staples, $region);
+    }
+
+    /**
+     * Keeps only real staples (with the product barcode the app finds a photo
+     * by) and stamps a priced list with its region and currency; without a
+     * price table the list stays a plain one, as before.
+     *
+     * @param  array<string, mixed>  $reply
+     * @param  array<string, array<string, mixed>>  $staples
+     * @return array<string, mixed>
+     */
+    private static function priceGrocery(array $reply, ?ShelfPrices $source, array $staples, ?string $region): array
+    {
+        if (empty($reply['grocery']['items'])) {
+            return $reply;
+        }
+        $reply['grocery']['items'] = array_map(function (array $item) use ($staples) {
+            $staple = is_string($item['staple'] ?? null) ? strtolower(trim($item['staple'])) : null;
+            unset($item['staple']);
+            if ($staples === []) {
+                unset($item['price']);
+
+                return $item;
+            }
+
+            return $staple !== null && isset($staples[$staple])
+                ? [...$item, 'staple' => $staple, 'ean' => $staples[$staple]['ean'] ?? null]
+                : $item;
+        }, $reply['grocery']['items']);
+        if ($staples !== [] && $source !== null) {
+            $reply['grocery']['region'] = $region;
+            $reply['grocery']['currency'] = $source::CURRENCY;
+        }
+
+        return $reply;
     }
 }

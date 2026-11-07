@@ -86,6 +86,8 @@ class MarkaiController extends Controller
         $language = $data['language'] ?? null;
         $task = $data['task'] ?? null;
         $week = $task === 'meal_plan' ? [$data['preferences'], $data['region'], $data['currency'], $data['language'] ?? 'en'] : null;
+        // Outside a meal plan, the user's region prices any grocery list MarkAI proposes.
+        $region = $task === 'meal_plan' ? null : ($data['region'] ?? null);
         abort_if($week && strlen(json_encode($week[0])) > 8000, 422, 'Preferences are too long.');
         unset($data['image'], $data['context'], $data['opener'], $data['task'], $data['preferences'], $data['region'], $data['currency'], $data['language']);
         $data['prompt'] ??= '';
@@ -170,7 +172,7 @@ class MarkaiController extends Controller
                     ? [['type' => 'text', 'text' => $data['prompt'] !== '' ? $data['prompt'] : 'What is in this photo?'],
                         ['type' => 'image_url', 'image_url' => ['url' => $image]]]
                     : $data['prompt']];
-                $reply = [...$ai->reply($data['mode'], $messages, $task, $context, $language), 'food_id' => $data['id'], 'log_requested' => false];
+                $reply = [...$ai->reply($data['mode'], $messages, $task, $context, $language, $region), 'food_id' => $data['id'], 'log_requested' => false];
             }
             DB::table('markai_messages')->where('id', $data['id'])->update(['status' => 'complete', 'reply' => json_encode($reply), 'updated_at' => now()]);
         } catch (\Throwable $error) {

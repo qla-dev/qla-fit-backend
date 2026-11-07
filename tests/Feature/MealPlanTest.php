@@ -154,6 +154,42 @@ class MealPlanTest extends TestCase
             $response->json('data.plan.days.0.meals.0.ingredients.1'));
     }
 
+    public function test_a_chat_grocery_list_is_priced_from_the_region_basket(): void
+    {
+        $this->member();
+        $request = null;
+        $this->fake(['text' => 'Here is your list.', 'food' => null, 'goal' => null, 'workout' => null,
+            'grocery' => ['name' => 'Week', 'items' => [
+                ['name' => 'Grah', 'quantity' => '500 g', 'price' => 1, 'staple' => 'Beans'],
+                ['name' => 'Luk', 'quantity' => '1 kg', 'price' => 1.2, 'staple' => 'shallots'],
+            ]]], function (Request $sent) use (&$request) {
+                $request = $sent;
+            });
+
+        $response = $this->postJson('/api/markai/messages', ['id' => (string) Str::uuid(), 'conversation_id' => (string) Str::uuid(),
+            'mode' => 'macros', 'prompt' => 'A grocery list please', 'region' => 'HR'])->assertOk()
+            ->assertJsonPath('data.reply.grocery.region', 'HR')->assertJsonPath('data.reply.grocery.currency', 'EUR');
+
+        $this->assertStringContainsString('- beans: 2 EUR per kg', $request['messages'][0]['content']);
+        // A real staple is kept with its barcode; a made-up one is dropped, the price stays.
+        $response->assertJsonPath('data.reply.grocery.items.0', ['name' => 'Grah', 'quantity' => '500 g', 'price' => 1,
+            'staple' => 'beans', 'ean' => '3850000000011']);
+        $this->assertSame(['name' => 'Luk', 'quantity' => '1 kg', 'price' => 1.2], $response->json('data.reply.grocery.items.1'));
+    }
+
+    public function test_a_chat_grocery_list_stays_plain_without_a_priced_region(): void
+    {
+        $this->member();
+        $this->fake(['text' => 'List.', 'food' => null, 'goal' => null, 'workout' => null,
+            'grocery' => ['name' => 'Week', 'items' => [['name' => 'Eggs', 'quantity' => '10', 'price' => 3, 'staple' => 'eggs']]]]);
+
+        $response = $this->postJson('/api/markai/messages', ['id' => (string) Str::uuid(), 'conversation_id' => (string) Str::uuid(),
+            'mode' => 'macros', 'prompt' => 'A grocery list please', 'region' => 'DE'])->assertOk();
+
+        $this->assertSame(['name' => 'Eggs', 'quantity' => '10'], $response->json('data.reply.grocery.items.0'));
+        $this->assertNull($response->json('data.reply.grocery.region'));
+    }
+
     public function test_vendors_come_from_the_api_and_each_chain_is_priced_on_its_own(): void
     {
         $this->fake($this->week());
